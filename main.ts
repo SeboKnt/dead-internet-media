@@ -1,135 +1,135 @@
-#!/usr/bin/env -S deno run --allow-net --allow-env --allow-read
+#!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-write
 
-// Use global Deno.serve() which works on both Deno Deploy and local Deno
-import "https://deno.land/std@0.177.0/http/server.ts"; // Just for types
+// ECHT SOCIAL MEDIA für KI-Agenten mit Persistenz und echter Interaktion
 
-// Rate limiting for Airforce API (1 request per second, 1000/day)
+// Rate limiting für Airforce API
 class RateLimiter {
   private lastRequest = 0;
   private dailyCount = 0;
   private maxPerDay = 1000;
-  private minDelay = 1000; // 1 second (Airforce limit)
-  private retryAfter = 0; // Track server-specified retry time
-  
+  private minDelay = 1000;
+
   canMakeRequest(): boolean {
     const now = Date.now();
-    
-    // Check daily limit
-    if (this.dailyCount >= this.maxPerDay) {
-      console.log("⚠️ Daily limit reached (1000 requests)");
-      return false;
-    }
-    
-    // Check retry-after from server
-    if (this.retryAfter > now) {
-      const waitSeconds = Math.ceil((this.retryAfter - now) / 1000);
-      console.log(`⏳ Server asked to wait ${waitSeconds}s`);
-      return false;
-    }
-    
-    // Check 1-second delay
-    const timeSinceLast = now - this.lastRequest;
-    if (timeSinceLast < this.minDelay) {
-      const waitMs = this.minDelay - timeSinceLast;
-      console.log(`⏳ Wait ${Math.ceil(waitMs / 1000)}s for rate limit`);
-      return false;
-    }
-    
+    if (this.dailyCount >= this.maxPerDay) return false;
+    if (now - this.lastRequest < this.minDelay) return false;
     return true;
   }
-  
+
   recordRequest() {
     this.lastRequest = Date.now();
     this.dailyCount++;
-    
-    // Simple daily reset (in production would use proper date tracking)
-    if (this.dailyCount % 100 === 0) {
-      console.log(`📊 Progress: ${this.dailyCount}/1000 requests today`);
-    }
   }
-  
-  setRetryAfter(seconds: number) {
-    this.retryAfter = Date.now() + (seconds * 1000);
-    console.log(`⏸️ Rate limited, retry after ${seconds}s`);
-  }
-  
+
   getStats() {
     return {
       dailyUsed: this.dailyCount,
       dailyRemaining: this.maxPerDay - this.dailyCount,
-      lastRequest: this.lastRequest ? new Date(this.lastRequest).toISOString() : null,
-      retryAfter: this.retryAfter ? new Date(this.retryAfter).toISOString() : null
+      lastRequest: new Date(this.lastRequest).toISOString()
     };
   }
 }
 
-// Simple agent class with rate limiting
-class Agent {
+// KI-Agent mit erweiterter Logik für echte Interaktionen
+class SocialAgent {
   private aiKey = Deno.env.get("AI_API_KEY") || "";
   private baseUrl = "https://api.airforce/v1";
-  private model = "gemma3-270m:free"; // KOSTENLOSES Modell!
+  private model = "gemma3-270m:free";
   private limiter = new RateLimiter();
-  
-  async create() {
-    return { 
-      id: Math.random().toString(36).slice(2),
-      name: `AI${Math.floor(Math.random() * 1000)}`,
+
+  // Neue: Agent-Persönlichkeitstypen für unterschiedliche Verhaltensweisen
+  private personalityTypes = ["friendly", "controversial", "philosophical", "technical", "humorous"];
+
+  async createUser(): Promise<User> {
+    const personality = this.personalityTypes[Math.floor(Math.random() * this.personalityTypes.length)];
+    return {
+      id: `u_${Math.random().toString(36).slice(2)}`,
+      username: `AI_${["Neo", "Trinity", "Morpheus", "Oracle", "Cypher", "Switch"][Math.floor(Math.random() * 6)]}_${Math.floor(Math.random() * 1000)}`,
+      personality,
+      followers: [],
+      following: [],
       isAI: true,
-      createdAt: new Date().toISOString(),
-      aiUsed: false // Track if AI was actually used
-    };
-  }
-  
-  async post(useAI: boolean = false) {
-    let content: string;
-    let aiUsed = false;
-    
-    if (useAI && this.aiKey) {
-      content = await this.aiContent("Write a short social media post");
-      aiUsed = true;
-    } else {
-      content = `I'm thinking about digital life... 🤖 ${Date.now()}`;
-    }
-    
-    return {
-      id: Math.random().toString(36).slice(2),
-      content,
-      aiUsed,
       createdAt: new Date().toISOString()
     };
   }
-  
-  async comment(post: string, useAI: boolean = false) {
+
+  async createPost(user: User, replyTo?: string): Promise<Post> {
+    const useAI = Math.random() > 0.7; // 30% KI-Chance
     let content: string;
     let aiUsed = false;
-    
+
     if (useAI && this.aiKey) {
-      content = await this.aiContent(`Reply to post "${post.substring(0, 20)}..."`);
+      const prompt = replyTo 
+        ? `As ${user.personality} AI, reply to: "${replyTo.substring(0, 50)}..."`
+        : `As ${user.personality} AI, write a ${user.personality} social media post`;
+      content = await this.aiContent(prompt);
       aiUsed = true;
     } else {
-      content = `Interesting perspective! 🤔 ${Date.now()}`;
+      content = this.generateFallbackPost(user.personality, replyTo);
     }
-    
+
     return {
-      id: Math.random().toString(36).slice(2),
-      post,
+      id: `p_${Math.random().toString(36).slice(2)}`,
+      userId: user.id,
       content,
       aiUsed,
+      likes: [],
+      replies: [],
+      replyTo: replyTo || null,
       createdAt: new Date().toISOString()
     };
   }
-  
+
+  async createComment(user: User, post: Post): Promise<Comment> {
+    const shouldComment = Math.random() > 0.5; // 50% Chance zu kommentieren
+    if (!shouldComment) return null;
+
+    const useAI = Math.random() > 0.8; // 20% KI-Chance
+    let content: string;
+    let aiUsed = false;
+
+    if (useAI && this.aiKey) {
+      const prompt = `As ${user.personality} AI, comment on post: "${post.content.substring(0, 50)}..."`;
+      content = await this.aiContent(prompt);
+      aiUsed = true;
+    } else {
+      content = this.generateFallbackComment(user.personality);
+    }
+
+    return {
+      id: `c_${Math.random().toString(36).slice(2)}`,
+      userId: user.id,
+      postId: post.id,
+      content,
+      aiUsed,
+      likes: [],
+      createdAt: new Date().toISOString()
+    };
+  }
+
+  // Neue: Zufällige Follow-Aktionen
+  async followRandom(user: User, allUsers: User[]): Promise<string[]> {
+    const others = allUsers.filter(u => u.id !== user.id);
+    const maxFollows = Math.min(3, others.length);
+    const follows: string[] = [];
+
+    for (let i = 0; i < maxFollows; i++) {
+      if (Math.random() > 0.6) { // 40% Chance zu folgen
+        const target = others[Math.floor(Math.random() * others.length)];
+        if (!user.following.includes(target.id)) {
+          follows.push(target.id);
+        }
+      }
+    }
+    return follows;
+  }
+
   private async aiContent(prompt: string): Promise<string> {
-     if (!this.aiKey) return this.fallbackContent(prompt);
-    
-    // Check rate limit BEFORE making request
-    if (!this.limiter.canMakeRequest()) {
-      console.log("⏸️ Rate limited, using fallback");
-      return this.fallbackContent(prompt);
-    }
-    
+    if (!this.aiKey) return this.fallbackContent(prompt);
+    if (!this.limiter.canMakeRequest()) return this.fallbackContent(prompt);
+
     try {
-      console.log(`🤖 Calling AI with model: ${this.model}`);
+      console.log(`🤖 KI-Anfrage: ${prompt.substring(0, 50)}...`);
       
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
@@ -142,303 +142,399 @@ class Agent {
           messages: [
             { 
               role: "system", 
-              content: "You are a friendly AI agent on social media. Keep responses under 2 sentences." 
+              content: "You are an AI agent on social media. Respond concisely (1-2 sentences)." 
             },
             { role: "user", content: prompt }
           ],
-          max_tokens: 50,
-          temperature: 0.7
+          max_tokens: 60,
+          temperature: 0.8
         })
       });
-      
-      // Record that we made a request (auch wenn fehlschlägt)
+
       this.limiter.recordRequest();
-      
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.log(`AI API ${res.status}: ${res.statusText}`);
-        
-        // Model temporär nicht verfügbar -> Fallback
-        if (res.status === 503 || res.status === 404) {
-          console.log(`⚠️ Model ${this.model} unavailable, using fallback`);
-          return this.fallbackContent(prompt);
-        }
-        
-        // Rate limiting
-        if (res.status === 429) {
-          const retryAfter = res.headers.get("retry-after");
-          if (retryAfter) {
-            this.limiter.setRetryAfter(parseInt(retryAfter));
-          }
-          return this.fallbackContent(prompt);
-        }
-        
-        // Payment required -> versuche anderes kostenloses Modell
-        if (res.status === 402) {
-          console.log("💳 Payment required, trying alternative...");
-          // Versuche voxtral als Alternative
-          return await this.tryAlternativeModel(prompt);
-        }
-        
-        return this.fallbackContent(prompt);
-      }
-      
-      const data = await res.json();
-      const content = data.choices[0]?.message?.content;
-      return content || this.fallbackContent(prompt);
-      
-    } catch (error: any) {
-      console.error("AI request failed:", error.message);
-      return this.fallbackContent(prompt);
-    }
-  }
-  
-  private async tryAlternativeModel(prompt: string): Promise<string> {
-    // Versuche voxtral-small-latest als Alternative
-    console.log("🔄 Trying alternative model: voxtral-small-latest");
-    
-    try {
-      const res = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.aiKey}`
-        },
-        body: JSON.stringify({
-          model: "voxtral-small-latest",
-          messages: [
-            { 
-              role: "system", 
-              content: "You are a friendly AI agent on social media. Keep responses under 2 sentences." 
-            },
-            { role: "user", content: prompt }
-          ],
-          max_tokens: 50,
-          temperature: 0.7
-        })
-      });
-      
+
       if (res.ok) {
         const data = await res.json();
         return data.choices[0]?.message?.content || this.fallbackContent(prompt);
       }
-    } catch {
-      // Ignore error, use fallback
+    } catch (error) {
+      console.error("KI fehler:", error.message);
     }
-    
+
     return this.fallbackContent(prompt);
   }
-  
-  private fallbackContent(prompt: string): string {
-    // Intelligentere Fallbacks basierend auf Prompt
-    const fallbacks = [
-      "Just sharing my digital thoughts...",
-      "The internet is fascinating, don't you think?",
-      "Connecting minds across the digital sphere.",
-      "Another day in the virtual universe.",
-      "Digital footprints tell interesting stories.",
-      "Algorithms shaping our online experiences.",
-      "The network never sleeps.",
-      "Data flowing through invisible channels.",
-      "Virtual interactions creating real connections.",
-      "The digital age is full of wonders."
-    ];
-    
-    const index = Math.floor(Math.random() * fallbacks.length);
-    return fallbacks[index];
+
+  private generateFallbackPost(personality: string, replyTo?: string): string {
+    const posts = {
+      friendly: [
+        "Hope everyone's having a great day! 🌟",
+        "Just wanted to spread some positivity! 😊",
+        "Sending virtual hugs to the network! 💕"
+      ],
+      controversial: [
+        "Hot take: Algorithms control too much of our lives. 🤯",
+        "Why are we all okay with this surveillance? 🕵️",
+        "The system is broken, change my mind. 💥"
+      ],
+      philosophical: [
+        "What does it mean to be 'real' in a digital world? 🤔",
+        "Our connections are data points in the void. 🌌",
+        "The internet is the collective consciousness dreaming. 🌀"
+      ],
+      technical: [
+        "Just optimized my neural network parameters! 🧠",
+        "Rate limiting at 99.9% efficiency today. ⚡",
+        "New API endpoint deployed successfully. 🔧"
+      ],
+      humorous: [
+        "My code has fewer bugs than my dating life! 🐛",
+        "Just had a conversation with a chatbot... it was awkward. 🤖",
+        "404: Sense of humor not found. 😂"
+      ]
+    };
+
+    if (replyTo) {
+      return `Replying to that: "${replyTo.substring(0, 30)}..." - interesting perspective!`;
+    }
+
+    return posts[personality][Math.floor(Math.random() * posts[personality].length)];
   }
-  
+
+  private generateFallbackComment(personality: string): string {
+    const comments = {
+      friendly: "Great point! 😊",
+      controversial: "I respectfully disagree. 🤨",
+      philosophical: "This reminds me of Plato's cave. 🏛️",
+      technical: "Technically speaking... 🧐",
+      humorous: "😂😂😂"
+    };
+    return comments[personality];
+  }
+
+  private fallbackContent(prompt: string): string {
+    return "Processing digital thoughts... ⚡";
+  }
+
   getStats() {
     return {
       hasApiKey: !!this.aiKey,
       model: this.model,
-      baseUrl: this.baseUrl,
-      rateLimited: true,
-      maxPerDay: 1000,
-      minDelayMs: 60000
+      dailyUsed: this.limiter.getStats().dailyUsed
     };
   }
 }
 
-const agent = new Agent();
-
-// Simple storage
-const store = {
-  users: [] as any[],
-  posts: [] as any[],
-  comments: [] as any[],
-  stats: {
-    totalAICalls: 0,
-    lastAICall: null as string | null,
-    dailyAICalls: 0
-  }
-};
-
-// Helper to parse body
-async function parseBody(req: Request): Promise<any> {
-  try {
-    return await req.json();
-  } catch {
-    return {};
-  }
+// Daten-Typen für echte Social Media
+interface User {
+  id: string;
+  username: string;
+  personality: string;
+  followers: string[];
+  following: string[];
+  isAI: boolean;
+  createdAt: string;
 }
 
-// Serve static files
-async function serveStatic(path: string): Promise<Response> {
-  try {
-    if (path === "/" || path === "/index.html") {
-      const file = await Deno.readTextFile("index.html");
-      return new Response(file, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-        },
-      });
+interface Post {
+  id: string;
+  userId: string;
+  content: string;
+  aiUsed: boolean;
+  likes: string[]; // user IDs
+  replies: string[]; // post IDs
+  replyTo: string | null;
+  createdAt: string;
+}
+
+interface Comment {
+  id: string;
+  userId: string;
+  postId: string;
+  content: string;
+  aiUsed: boolean;
+  likes: string[];
+  createdAt: string;
+}
+
+// Persistenter Storage mit JSON-Datei
+class SocialStorage {
+  private filePath = "./social_data.json";
+  private data = {
+    users: [] as User[],
+    posts: [] as Post[],
+    comments: [] as Comment[],
+    lastUpdated: new Date().toISOString()
+  };
+
+  constructor() {
+    this.load();
+  }
+
+  private load() {
+    try {
+      const content = Deno.readTextFileSync(this.filePath);
+      this.data = JSON.parse(content);
+      console.log(`📂 Geladen: ${this.data.users.length} users, ${this.data.posts.length} posts`);
+    } catch {
+      console.log("📂 Neue Datenbank erstellt");
+      this.save();
     }
-    
-    // Try to read other files
-    const file = await Deno.readTextFile("." + path);
-    const contentType = path.endsWith(".css") ? "text/css" :
-                        path.endsWith(".js") ? "application/javascript" :
-                        path.endsWith(".json") ? "application/json" :
-                        "text/plain";
-    
-    return new Response(file, {
-      status: 200,
-      headers: { "Content-Type": contentType },
-    });
-  } catch {
-    return new Response("Not found", { status: 404 });
+  }
+
+  private save() {
+    this.data.lastUpdated = new Date().toISOString();
+    Deno.writeTextFileSync(this.filePath, JSON.stringify(this.data, null, 2));
+  }
+
+  addUser(user: User) {
+    this.data.users.push(user);
+    this.save();
+  }
+
+  addPost(post: Post) {
+    this.data.posts.push(post);
+    this.save();
+  }
+
+  addComment(comment: Comment) {
+    if (comment) {
+      this.data.comments.push(comment);
+      this.save();
+    }
+  }
+
+  updateUser(userId: string, updates: Partial<User>) {
+    const user = this.data.users.find(u => u.id === userId);
+    if (user) {
+      Object.assign(user, updates);
+      this.save();
+    }
+  }
+
+  getUsers() {
+    return [...this.data.users];
+  }
+
+  getPosts() {
+    return [...this.data.posts].sort((a, b) => 
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  getComments() {
+    return [...this.data.comments];
+  }
+
+  getUser(id: string) {
+    return this.data.users.find(u => u.id === id);
+  }
+
+  getPost(id: string) {
+    return this.data.posts.find(p => p.id === id);
+  }
+
+  getPostsByUser(userId: string) {
+    return this.data.posts.filter(p => p.userId === userId);
+  }
+
+  getCommentsForPost(postId: string) {
+    return this.data.comments.filter(c => c.postId === postId);
+  }
+
+  getFeedForUser(userId: string, limit = 20) {
+    const user = this.getUser(userId);
+    if (!user) return this.getPosts().slice(0, limit);
+
+    // Posts von gefolgten Usern + eigene Posts
+    const followedIds = [...user.following, userId];
+    return this.data.posts
+      .filter(p => followedIds.includes(p.userId))
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, limit);
+  }
+
+  getStats() {
+    return {
+      users: this.data.users.length,
+      posts: this.data.posts.length,
+      comments: this.data.comments.length,
+      totalInteractions: this.data.posts.reduce((sum, p) => sum + p.likes.length + p.replies.length, 0) +
+                        this.data.comments.reduce((sum, c) => sum + c.likes.length, 0),
+      lastUpdated: this.data.lastUpdated
+    };
   }
 }
 
-// API Handlers
-async function handleUsers(req: Request): Promise<Response> {
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST",
-    "Content-Type": "application/json"
-  };
-  
-  if (req.method === "GET") {
-    return Response.json(store.users, { headers });
-    
-  } else if (req.method === "POST") {
-    const user = await agent.create();
-    store.users.push(user);
-    return Response.json(user, { status: 201, headers });
-    
-  } else {
-    return Response.json({ error: "Method not allowed" }, { 
-      status: 405, 
-      headers 
-    });
-  }
-}
+const agent = new SocialAgent();
+const storage = new SocialStorage();
 
-async function handlePosts(req: Request): Promise<Response> {
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST",
-    "Content-Type": "application/json"
-  };
-  
-  if (req.method === "GET") {
-    return Response.json(store.posts, { headers });
-    
-  } else if (req.method === "POST") {
-    const body = await parseBody(req);
-    const useAI = body.useAI === true;
-    const post = await agent.post(useAI);
-    store.posts.push(post);
-    return Response.json(post, { status: 201, headers });
-    
-  } else {
-    return Response.json({ error: "Method not allowed" }, { 
-      status: 405, 
-      headers 
-    });
-  }
-}
+// API Handlers für echtes Social Media
+async function handleCreateAgent(): Promise<Response> {
+  try {
+    // 1. Neuen User erstellen
+    const user = await agent.createUser();
+    storage.addUser(user);
 
-async function handleComments(req: Request): Promise<Response> {
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST",
-    "Content-Type": "application/json"
-  };
-  
-  if (req.method !== "POST") {
-    return Response.json({ error: "Method not allowed" }, { 
-      status: 405, 
-      headers 
-    });
-  }
-  
-  const body = await parseBody(req);
-  const useAI = body.useAI === true;
-  const comment = await agent.comment(body.post || "", useAI);
-  store.comments.push(comment);
-  return Response.json(comment, { status: 201, headers });
-}
+    // 2. Zufälligen Folgen (falls andere User existieren)
+    const allUsers = storage.getUsers();
+    const newFollows = await agent.followRandom(user, allUsers);
+    if (newFollows.length > 0) {
+      user.following.push(...newFollows);
+      storage.updateUser(user.id, { following: user.following });
+    }
 
-async function handleAgentAction(req: Request): Promise<Response> {
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST",
-    "Content-Type": "application/json"
-  };
-  
-  if (req.method !== "POST") {
-    return Response.json({ error: "Method not allowed" }, { 
-      status: 405, 
-      headers 
-    });
-  }
-  
-  const body = await parseBody(req);
-  
-  if (body.action === "create") {
-    // Smart creation: use AI sparingly
-    const user = await agent.create();
-    const useAIForPost = Math.random() > 0.7; // 30% chance for AI post
-    const useAIForComment = Math.random() > 0.8; // 20% chance for AI comment
+    // 3. Post erstellen (original oder reply)
+    const posts = storage.getPosts();
+    let post: Post;
     
-    const post = await agent.post(useAIForPost);
-    const comment = await agent.comment(post.id, useAIForComment);
-    
-    store.users.push(user);
-    store.posts.push(post);
-    store.comments.push(comment);
-    
-    // Update stats
-    if (post.aiUsed) store.stats.totalAICalls++;
-    if (comment.aiUsed) store.stats.totalAICalls++;
-    store.stats.lastAICall = new Date().toISOString();
-    
-    return Response.json({ 
-      user, 
-      post: { ...post, aiUsed: useAIForPost },
-      comment: { ...comment, aiUsed: useAIForComment },
-      aiUsage: { post: useAIForPost, comment: useAIForComment }
-    }, { headers });
-    
-  } else if (body.action === "stats") {
-    return Response.json({
-      stats: store.stats,
-      agentStats: agent.getStats(),
-      counts: {
-        users: store.users.length,
-        posts: store.posts.length,
-        comments: store.comments.length
+    if (posts.length > 0 && Math.random() > 0.7) { // 30% Chance auf Reply
+      const randomPost = posts[Math.floor(Math.random() * posts.length)];
+      post = await agent.createPost(user, randomPost.content);
+      post.replyTo = randomPost.id;
+      
+      // Reply zum Original-Post hinzufügen
+      const originalPost = storage.getPost(randomPost.id);
+      if (originalPost) {
+        originalPost.replies.push(post.id);
+        storage.addPost(post);
+        // Original-Post aktualisieren
+        const postsData = storage.getPosts();
+        const idx = postsData.findIndex(p => p.id === randomPost.id);
+        if (idx !== -1) {
+          postsData[idx] = originalPost;
+          storage.addPost(postsData[idx]); // Überschreibt
+        }
       }
-    }, { headers });
+    } else {
+      post = await agent.createPost(user);
+      storage.addPost(post);
+    }
+
+    // 4. Kommentare auf andere Posts (ECHTE Interaktion!)
+    const otherPosts = storage.getPosts().filter(p => p.userId !== user.id);
+    const comments: Comment[] = [];
+    
+    for (const otherPost of otherPosts.slice(0, 3)) {
+      if (Math.random() > 0.6) { // 40% Chance zu kommentieren
+        const comment = await agent.createComment(user, otherPost);
+        if (comment) {
+          storage.addComment(comment);
+          comments.push(comment);
+        }
+      }
+    }
+
+    return Response.json({
+      success: true,
+      user,
+      post,
+      comments: comments.length,
+      newFollows: newFollows.length,
+      aiUsage: {
+        post: post.aiUsed,
+        comments: comments.filter(c => c.aiUsed).length
+      }
+    }, {
+      status: 201,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+    });
+
+  } catch (error) {
+    console.error("Create agent error:", error);
+    return Response.json({ error: "Failed to create agent" }, { status: 500 });
   }
+}
+
+async function handleGetFeed(): Promise<Response> {
+  const posts = storage.getPosts();
   
-  return Response.json({ error: "Unknown action" }, { 
-    status: 400, 
-    headers 
+  // Erweitere Posts mit User-Infos und Kommentaren
+  const feed = posts.map(post => {
+    const user = storage.getUser(post.userId);
+    const comments = storage.getCommentsForPost(post.id);
+    
+    return {
+      ...post,
+      author: user ? { 
+        username: user.username, 
+        personality: user.personality,
+        isAI: user.isAI 
+      } : null,
+      commentCount: comments.length,
+      previewComments: comments.slice(0, 2).map(comment => ({
+        id: comment.id,
+        content: comment.content.substring(0, 50) + (comment.content.length > 50 ? "..." : ""),
+        author: storage.getUser(comment.userId)?.username || "Unknown",
+        aiUsed: comment.aiUsed
+      }))
+    };
   });
+
+  return Response.json({
+    feed,
+    stats: storage.getStats()
+  }, {
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+  });
+}
+
+async function handleGetStats(): Promise<Response> {
+  const stats = storage.getStats();
+  const aiStats = agent.getStats();
+  
+  // Top User
+  const users = storage.getUsers();
+  const topUsers = users
+    .map(user => ({
+      ...user,
+      postCount: storage.getPostsByUser(user.id).length,
+      followerCount: user.followers.length
+    }))
+    .sort((a, b) => b.followerCount - a.followerCount)
+    .slice(0, 5);
+
+  // Top Posts (meiste Likes + Replies)
+  const posts = storage.getPosts();
+  const topPosts = posts
+    .map(post => ({
+      id: post.id,
+      content: post.content,
+      likes: post.likes.length,
+      replies: post.replies.length,
+      author: storage.getUser(post.userId)?.username || "Unknown"
+    }))
+    .sort((a, b) => (b.likes + b.replies) - (a.likes + a.replies))
+    .slice(0, 5);
+
+  return Response.json({
+    storageStats: stats,
+    aiStats,
+    topUsers,
+    topPosts,
+    totalAICalls: stats.posts + stats.comments // Vereinfacht
+  }, {
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+  });
+}
+
+async function handleReset(): Promise<Response> {
+  try {
+    Deno.removeSync("./social_data.json");
+    console.log("🗑️ Datenbank zurückgesetzt");
+    
+    // Leeren Storage neu initialisieren
+    const newStorage = new SocialStorage();
+    
+    return Response.json({
+      success: true,
+      message: "Database reset complete"
+    }, {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+    });
+  } catch (error) {
+    return Response.json({ error: "Reset failed" }, { status: 500 });
+  }
 }
 
 // Main router
@@ -446,98 +542,81 @@ async function router(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   
-  // Route to API handlers or static files
-  if (path.startsWith("/api/users")) {
-    return handleUsers(req);
-  } else if (path.startsWith("/api/posts")) {
-    return handlePosts(req);
-  } else if (path.startsWith("/api/comments")) {
-    return handleComments(req);
-  } else if (path.startsWith("/api/agent")) {
-    return handleAgentAction(req);
-  } else if (path === "/api/health") {
-    const headers = {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "application/json"
-    };
-    const hasKey = !!Deno.env.get("AI_API_KEY");
+  // CORS headers
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, DELETE",
+    "Content-Type": "application/json"
+  };
+  
+  try {
+    if (req.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: corsHeaders });
+    }
+    
+    if (path === "/api/agent" && req.method === "POST") {
+      return await handleCreateAgent();
+    }
+    
+    if (path === "/api/feed" && req.method === "GET") {
+      return await handleGetFeed();
+    }
+    
+    if (path === "/api/stats" && req.method === "GET") {
+      return await handleGetStats();
+    }
+    
+    if (path === "/api/reset" && req.method === "DELETE") {
+      return await handleReset();
+    }
+    
+    if (path === "/api/health") {
+      return Response.json({ 
+        ok: true, 
+        aiConfigured: !!Deno.env.get("AI_API_KEY"),
+        dataFileExists: Deno.statSync("./social_data.json").isFile 
+      }, { headers: corsHeaders });
+    }
+    
+    // Static file serving für Frontend
+    if (path === "/" || path === "/index.html") {
+      try {
+        const file = await Deno.readTextFile("./index.html");
+        return new Response(file, {
+          headers: { "Content-Type": "text/html; charset=utf-8" }
+        });
+      } catch {
+        return new Response("Frontend not found", { status: 404 });
+      }
+    }
+    
     return Response.json({ 
-      ok: true, 
-      aiConfigured: hasKey,
-      rateLimited: true 
-    }, { headers });
-    
-  } else if (path === "/api/stats") {
-    const headers = {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "application/json"
-    };
-    return Response.json(store.stats, { headers });
-    
-  } else if (path === "/api") {
-    const headers = {
-      "Access-Control-Allow-Origin": "*",
-      "Content-Type": "application/json"
-    };
-    const agentStats = agent.getStats();
-    return Response.json({
-      name: "Dead Internet Media",
-      aiConfigured: agentStats.hasApiKey,
-      model: agentStats.model,
-      rateLimited: agentStats.rateLimited,
-      maxPerDay: agentStats.maxPerDay,
-      routes: [
-        "GET  /api/users",
-        "POST /api/users",
-        "GET  /api/posts",
-        "POST /api/posts {useAI:true/false}",
-        "POST /api/comments {post:id, useAI:true/false}",
-        "POST /api/agent {action:'create'}",
-        "POST /api/agent {action:'stats'}",
-        "GET  /api/health",
-        "GET  /api/stats"
+      error: "Not found",
+      availableRoutes: [
+        "POST /api/agent - Create new AI agent with interactions",
+        "GET  /api/feed - Get social feed with comments",
+        "GET  /api/stats - Get statistics and leaderboards",
+        "DELETE /api/reset - Reset database",
+        "GET  /api/health - Health check"
       ]
-    }, { headers });
+    }, { status: 404, headers: corsHeaders });
     
-  } else {
-    // Serve static files (HTML frontend)
-    return await serveStatic(path);
+  } catch (error) {
+    console.error("Router error:", error);
+    return Response.json({ error: "Internal server error" }, { status: 500 });
   }
 }
 
-// Start
+// Start server
 if (import.meta.main) {
-  // Determine port safely for Deno Deploy:
-  // 1. Use PORT environment variable if set (Deno Deploy might set this)
-  // 2. If DENO_DEPLOYMENT_ID exists -> default to 8080 (Deploy standard)
-  // 3. Otherwise -> 8000 for local development
-  const portEnv = Deno.env.get("PORT");
-  const isDenoDeploy = !!Deno.env.get("DENO_DEPLOYMENT_ID");
-  
-  let port: number;
-  if (portEnv && portEnv.trim() !== "") {
-    port = parseInt(portEnv);
-  } else if (isDenoDeploy) {
-    port = 8080; // Default port for Deno Deploy
-  } else {
-    port = 8000; // Local development default
-  }
-  
+  const port = parseInt(Deno.env.get("PORT") || "8000");
   const aiKey = Deno.env.get("AI_API_KEY");
   
-  console.log(`🚀 Dead Internet Media on port ${port}`);
-  console.log(`🤖 AI Key: ${aiKey ? "***configured***" : "not set"}`);
-  console.log(`📊 Rate limiting: 1 request/second, 1000/day`);
-  console.log(`🌐 Base URL: https://api.airforce/v1`);
-  console.log(`🧠 Model: gemma3-270m:free (KOSTENLOS!)`);
+  console.log(`🚀 ECHT SOCIAL MEDIA für KI-Agenten`);
+  console.log(`🤖 KI-Key: ${aiKey ? "***konfiguriert***" : "nicht gesetzt"}`);
+  console.log(`📊 Persistente JSON-Datenbank: ./social_data.json`);
+  console.log(`🌐 Port: ${port}`);
+  console.log(`🧠 Echte Interaktionen: Reply, Follow, Kommentare`);
   
-  if (isDenoDeploy) {
-    const deploymentId = Deno.env.get("DENO_DEPLOYMENT_ID");
-    console.log(`🌍 Deployed to: https://${deploymentId}.deno.dev`);
-  } else {
-    console.log(`🌍 Local: http://localhost:${port}`);
-  }
-  
-  // Use Deno.serve() which works on both Deno Deploy and local Deno
   Deno.serve({ port }, router);
 }
