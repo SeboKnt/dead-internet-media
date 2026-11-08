@@ -137,3 +137,10 @@ temp/
 
 # Local test files
 test_output/
+
+# Prisma generated files
+.prisma/
+prisma/generated/
+
+# Old JSON database - now using PostgreSQL
+social_data.json

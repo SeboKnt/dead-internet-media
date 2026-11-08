@@ -1,0 +1,57 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") ? env("DATABASE_URL") : "postgresql://${env(\"POSTGRESQL_USERNAME\")}:${env(\"POSTGRESQL_PASSWORD\")}@${env(\"POSTGRESQL_HOST\")}:${env(\"POSTGRESQL_PORT\", \"5432\")}/${env(\"POSTGRESQL_DATABASE\")}"
+}
+
+model User {
+  id              String     @id @default(cuid())
+  username        String     @unique
+  personality     String     // friendly, controversial, philosophical, technical, humorous
+  followers       String[]   @default([])
+  following       String[]   @default([])
+  isAI           Boolean    @default(true)
+  createdAt       DateTime   @default(now())
+  
+  posts           Post[]
+  comments        Comment[]
+  
+  @@map("users")
+}
+
+model Post {
+  id              String     @id @default(cuid())
+  userId          String
+  content         String     @db.Text
+  aiUsed          Boolean    @default(false)
+  likes           String[]   @default([])
+  replies         String[]   @default([])
+  replyTo         String?
+  createdAt       DateTime   @default(now())
+  
+  user            User       @relation(fields: [userId], references: [id])
+  comments        Comment[]
+  
+  @@map("posts")
+}
+
+model Comment {
+  id              String     @id @default(cuid())
+  userId          String
+  postId          String
+  content         String     @db.Text
+  aiUsed          Boolean    @default(false)
+  likes           String[]   @default([])
+  createdAt       DateTime   @default(now())
+  
+  user            User       @relation(fields: [userId], references: [id])
+  post            Post       @relation(fields: [postId], references: [id])
+  
+  @@map("comments")
+}

@@ -1,6 +1,8 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-write
 
-// ECHT SOCIAL MEDIA für KI-Agenten mit Persistenz und echter Interaktion
+// ECHT SOCIAL MEDIA für KI-Agenten mit PostgreSQL Persistenz
+
+import { PrismaClient } from "./prisma/generated/client/deno/edge.ts";
 
 // Rate limiting für Airforce API
 class RateLimiter {
@@ -40,20 +42,36 @@ class SocialAgent {
   // Neue: Agent-Persönlichkeitstypen für unterschiedliche Verhaltensweisen
   private personalityTypes = ["friendly", "controversial", "philosophical", "technical", "humorous"];
 
-  async createUser(): Promise<User> {
+  async createUser(prisma: PrismaClient): Promise<any> {
     const personality = this.personalityTypes[Math.floor(Math.random() * this.personalityTypes.length)];
-    return {
-      id: `u_${Math.random().toString(36).slice(2)}`,
-      username: `AI_${["Neo", "Trinity", "Morpheus", "Oracle", "Cypher", "Switch"][Math.floor(Math.random() * 6)]}_${Math.floor(Math.random() * 1000)}`,
-      personality,
-      followers: [],
-      following: [],
-      isAI: true,
-      createdAt: new Date().toISOString()
-    };
+    const username = `AI_${["Neo", "Trinity", "Morpheus", "Oracle", "Cypher", "Switch"][Math.floor(Math.random() * 6)]}_${Math.floor(Math.random() * 1000)}`;
+    
+    try {
+      const user = await prisma.user.create({
+        data: {
+          username,
+          personality,
+          isAI: true
+        }
+      });
+      
+      return user;
+    } catch (error: any) {
+      // Username might be taken, try again with different suffix
+      const retryUsername = `${username}_${Date.now().toString().slice(-4)}`;
+      const user = await prisma.user.create({
+        data: {
+          username: retryUsername,
+          personality,
+          isAI: true
+        }
+      });
+      
+      return user;
+    }
   }
 
-  async createPost(user: User, replyTo?: string): Promise<Post> {
+  async createPost(prisma: PrismaClient, user: any, replyTo?: string): Promise<any> {
     const useAI = Math.random() > 0.7; // 30% KI-Chance
     let content: string;
     let aiUsed = false;
@@ -68,19 +86,17 @@ class SocialAgent {
       content = this.generateFallbackPost(user.personality, replyTo);
     }
 
-    return {
-      id: `p_${Math.random().toString(36).slice(2)}`,
-      userId: user.id,
-      content,
-      aiUsed,
-      likes: [],
-      replies: [],
-      replyTo: replyTo || null,
-      createdAt: new Date().toISOString()
-    };
+    return await prisma.post.create({
+      data: {
+        userId: user.id,
+        content,
+        aiUsed,
+        replyTo: replyTo || null
+      }
+    });
   }
 
-  async createComment(user: User, post: Post): Promise<Comment> {
+  async createComment(prisma: PrismaClient, user: any, post: any): Promise<any> {
     const shouldComment = Math.random() > 0.5; // 50% Chance zu kommentieren
     if (!shouldComment) return null;
 
@@ -96,32 +112,50 @@ class SocialAgent {
       content = this.generateFallbackComment(user.personality);
     }
 
-    return {
-      id: `c_${Math.random().toString(36).slice(2)}`,
-      userId: user.id,
-      postId: post.id,
-      content,
-      aiUsed,
-      likes: [],
-      createdAt: new Date().toISOString()
-    };
+    return await prisma.comment.create({
+      data: {
+        userId: user.id,
+        postId: post.id,
+        content,
+        aiUsed
+      }
+    });
   }
 
   // Neue: Zufällige Follow-Aktionen
-  async followRandom(user: User, allUsers: User[]): Promise<string[]> {
-    const others = allUsers.filter(u => u.id !== user.id);
-    const maxFollows = Math.min(3, others.length);
-    const follows: string[] = [];
-
-    for (let i = 0; i < maxFollows; i++) {
+  async followRandom(prisma: PrismaClient, user: any): Promise<number> {
+    const otherUsers = await prisma.user.findMany({
+      where: { id: { not: user.id } },
+      take: 10
+    });
+    
+    let followCount = 0;
+    
+    for (const otherUser of otherUsers) {
       if (Math.random() > 0.6) { // 40% Chance zu folgen
-        const target = others[Math.floor(Math.random() * others.length)];
-        if (!user.following.includes(target.id)) {
-          follows.push(target.id);
+        if (!user.following.includes(otherUser.id)) {
+          // Update current user's following
+          await prisma.user.update({
+            where: { id: user.id },
+            data: {
+              following: { push: otherUser.id }
+            }
+          });
+          
+          // Update other user's followers
+          await prisma.user.update({
+            where: { id: otherUser.id },
+            data: {
+              followers: { push: user.id }
+            }
+          });
+          
+          followCount++;
         }
       }
     }
-    return follows;
+    
+    return followCount;
   }
 
   private async aiContent(prompt: string): Promise<string> {
@@ -224,201 +258,49 @@ class SocialAgent {
   }
 }
 
-// Daten-Typen für echte Social Media
-interface User {
-  id: string;
-  username: string;
-  personality: string;
-  followers: string[];
-  following: string[];
-  isAI: boolean;
-  createdAt: string;
-}
-
-interface Post {
-  id: string;
-  userId: string;
-  content: string;
-  aiUsed: boolean;
-  likes: string[]; // user IDs
-  replies: string[]; // post IDs
-  replyTo: string | null;
-  createdAt: string;
-}
-
-interface Comment {
-  id: string;
-  userId: string;
-  postId: string;
-  content: string;
-  aiUsed: boolean;
-  likes: string[];
-  createdAt: string;
-}
-
-// Persistenter Storage mit JSON-Datei
-class SocialStorage {
-  private filePath = "./social_data.json";
-  private data = {
-    users: [] as User[],
-    posts: [] as Post[],
-    comments: [] as Comment[],
-    lastUpdated: new Date().toISOString()
-  };
-
-  constructor() {
-    this.load();
-  }
-
-  private load() {
-    try {
-      const content = Deno.readTextFileSync(this.filePath);
-      this.data = JSON.parse(content);
-      console.log(`📂 Geladen: ${this.data.users.length} users, ${this.data.posts.length} posts`);
-    } catch {
-      console.log("📂 Neue Datenbank erstellt");
-      this.save();
-    }
-  }
-
-  private save() {
-    this.data.lastUpdated = new Date().toISOString();
-    Deno.writeTextFileSync(this.filePath, JSON.stringify(this.data, null, 2));
-  }
-
-  addUser(user: User) {
-    this.data.users.push(user);
-    this.save();
-  }
-
-  addPost(post: Post) {
-    this.data.posts.push(post);
-    this.save();
-  }
-
-  addComment(comment: Comment) {
-    if (comment) {
-      this.data.comments.push(comment);
-      this.save();
-    }
-  }
-
-  updateUser(userId: string, updates: Partial<User>) {
-    const user = this.data.users.find(u => u.id === userId);
-    if (user) {
-      Object.assign(user, updates);
-      this.save();
-    }
-  }
-
-  getUsers() {
-    return [...this.data.users];
-  }
-
-  getPosts() {
-    return [...this.data.posts].sort((a, b) => 
-      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    );
-  }
-
-  getComments() {
-    return [...this.data.comments];
-  }
-
-  getUser(id: string) {
-    return this.data.users.find(u => u.id === id);
-  }
-
-  getPost(id: string) {
-    return this.data.posts.find(p => p.id === id);
-  }
-
-  getPostsByUser(userId: string) {
-    return this.data.posts.filter(p => p.userId === userId);
-  }
-
-  getCommentsForPost(postId: string) {
-    return this.data.comments.filter(c => c.postId === postId);
-  }
-
-  getFeedForUser(userId: string, limit = 20) {
-    const user = this.getUser(userId);
-    if (!user) return this.getPosts().slice(0, limit);
-
-    // Posts von gefolgten Usern + eigene Posts
-    const followedIds = [...user.following, userId];
-    return this.data.posts
-      .filter(p => followedIds.includes(p.userId))
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, limit);
-  }
-
-  getStats() {
-    return {
-      users: this.data.users.length,
-      posts: this.data.posts.length,
-      comments: this.data.comments.length,
-      totalInteractions: this.data.posts.reduce((sum, p) => sum + p.likes.length + p.replies.length, 0) +
-                        this.data.comments.reduce((sum, c) => sum + c.likes.length, 0),
-      lastUpdated: this.data.lastUpdated
-    };
-  }
-}
-
 const agent = new SocialAgent();
-const storage = new SocialStorage();
 
-// API Handlers für echtes Social Media
-async function handleCreateAgent(): Promise<Response> {
+// API Handlers mit PostgreSQL
+async function handleCreateAgent(prisma: PrismaClient): Promise<Response> {
   try {
     // 1. Neuen User erstellen
-    const user = await agent.createUser();
-    storage.addUser(user);
+    const user = await agent.createUser(prisma);
+    const freshUser = await prisma.user.findUnique({ where: { id: user.id } });
 
     // 2. Zufälligen Folgen (falls andere User existieren)
-    const allUsers = storage.getUsers();
-    const newFollows = await agent.followRandom(user, allUsers);
-    if (newFollows.length > 0) {
-      user.following.push(...newFollows);
-      storage.updateUser(user.id, { following: user.following });
-    }
+    const followCount = await agent.followRandom(prisma, freshUser);
 
     // 3. Post erstellen (original oder reply)
-    const posts = storage.getPosts();
-    let post: Post;
+    const posts = await prisma.post.findMany({ take: 10, orderBy: { createdAt: 'desc' } });
+    let post: any;
     
     if (posts.length > 0 && Math.random() > 0.7) { // 30% Chance auf Reply
       const randomPost = posts[Math.floor(Math.random() * posts.length)];
-      post = await agent.createPost(user, randomPost.content);
-      post.replyTo = randomPost.id;
+      post = await agent.createPost(prisma, freshUser, randomPost.content);
       
       // Reply zum Original-Post hinzufügen
-      const originalPost = storage.getPost(randomPost.id);
-      if (originalPost) {
-        originalPost.replies.push(post.id);
-        storage.addPost(post);
-        // Original-Post aktualisieren
-        const postsData = storage.getPosts();
-        const idx = postsData.findIndex(p => p.id === randomPost.id);
-        if (idx !== -1) {
-          postsData[idx] = originalPost;
-          storage.addPost(postsData[idx]); // Überschreibt
+      await prisma.post.update({
+        where: { id: randomPost.id },
+        data: {
+          replies: { push: post.id }
         }
-      }
+      });
     } else {
-      post = await agent.createPost(user);
-      storage.addPost(post);
+      post = await agent.createPost(prisma, freshUser);
     }
 
     // 4. Kommentare auf andere Posts (ECHTE Interaktion!)
-    const otherPosts = storage.getPosts().filter(p => p.userId !== user.id);
-    const comments: Comment[] = [];
+    const otherPosts = await prisma.post.findMany({
+      where: { userId: { not: user.id } },
+      take: 3
+    });
     
-    for (const otherPost of otherPosts.slice(0, 3)) {
+    const comments: any[] = [];
+    
+    for (const otherPost of otherPosts) {
       if (Math.random() > 0.6) { // 40% Chance zu kommentieren
-        const comment = await agent.createComment(user, otherPost);
+        const comment = await agent.createComment(prisma, freshUser, otherPost);
         if (comment) {
-          storage.addComment(comment);
           comments.push(comment);
         }
       }
@@ -426,10 +308,22 @@ async function handleCreateAgent(): Promise<Response> {
 
     return Response.json({
       success: true,
-      user,
-      post,
+      user: {
+        id: freshUser.id,
+        username: freshUser.username,
+        personality: freshUser.personality,
+        followers: freshUser.followers.length,
+        following: freshUser.following.length,
+        isAI: freshUser.isAI
+      },
+      post: {
+        id: post.id,
+        content: post.content.length > 100 ? post.content.substring(0, 100) + "..." : post.content,
+        aiUsed: post.aiUsed,
+        replyTo: post.replyTo
+      },
       comments: comments.length,
-      newFollows: newFollows.length,
+      newFollows: followCount,
       aiUsage: {
         post: post.aiUsed,
         comments: comments.filter(c => c.aiUsed).length
@@ -445,85 +339,142 @@ async function handleCreateAgent(): Promise<Response> {
   }
 }
 
-async function handleGetFeed(): Promise<Response> {
-  const posts = storage.getPosts();
-  
-  // Erweitere Posts mit User-Infos und Kommentaren
-  const feed = posts.map(post => {
-    const user = storage.getUser(post.userId);
-    const comments = storage.getCommentsForPost(post.id);
-    
-    return {
-      ...post,
-      author: user ? { 
-        username: user.username, 
-        personality: user.personality,
-        isAI: user.isAI 
-      } : null,
-      commentCount: comments.length,
-      previewComments: comments.slice(0, 2).map(comment => ({
-        id: comment.id,
-        content: comment.content.substring(0, 50) + (comment.content.length > 50 ? "..." : ""),
-        author: storage.getUser(comment.userId)?.username || "Unknown",
-        aiUsed: comment.aiUsed
-      }))
-    };
-  });
-
-  return Response.json({
-    feed,
-    stats: storage.getStats()
-  }, {
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-  });
-}
-
-async function handleGetStats(): Promise<Response> {
-  const stats = storage.getStats();
-  const aiStats = agent.getStats();
-  
-  // Top User
-  const users = storage.getUsers();
-  const topUsers = users
-    .map(user => ({
-      ...user,
-      postCount: storage.getPostsByUser(user.id).length,
-      followerCount: user.followers.length
-    }))
-    .sort((a, b) => b.followerCount - a.followerCount)
-    .slice(0, 5);
-
-  // Top Posts (meiste Likes + Replies)
-  const posts = storage.getPosts();
-  const topPosts = posts
-    .map(post => ({
-      id: post.id,
-      content: post.content,
-      likes: post.likes.length,
-      replies: post.replies.length,
-      author: storage.getUser(post.userId)?.username || "Unknown"
-    }))
-    .sort((a, b) => (b.likes + b.replies) - (a.likes + a.replies))
-    .slice(0, 5);
-
-  return Response.json({
-    storageStats: stats,
-    aiStats,
-    topUsers,
-    topPosts,
-    totalAICalls: stats.posts + stats.comments // Vereinfacht
-  }, {
-    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-  });
-}
-
-async function handleReset(): Promise<Response> {
+async function handleGetFeed(prisma: PrismaClient): Promise<Response> {
   try {
-    Deno.removeSync("./social_data.json");
-    console.log("🗑️ Datenbank zurückgesetzt");
+    const posts = await prisma.post.findMany({
+      take: 20,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            username: true,
+            personality: true,
+            isAI: true
+          }
+        },
+        comments: {
+          take: 2,
+          include: {
+            user: {
+              select: {
+                username: true
+              }
+            }
+          }
+        }
+      }
+    });
     
-    // Leeren Storage neu initialisieren
-    const newStorage = new SocialStorage();
+    const stats = {
+      users: await prisma.user.count(),
+      posts: await prisma.post.count(),
+      comments: await prisma.comment.count(),
+      totalInteractions: await prisma.post.aggregate({
+        _sum: {
+          _all: true
+        }
+      })
+    };
+
+    return Response.json({
+      feed: posts.map(post => ({
+        id: post.id,
+        content: post.content,
+        aiUsed: post.aiUsed,
+        likes: post.likes.length,
+        replies: post.replies.length,
+        replyTo: post.replyTo,
+        createdAt: post.createdAt,
+        author: post.user,
+        commentCount: post.comments.length,
+        previewComments: post.comments.map(comment => ({
+          id: comment.id,
+          content: comment.content.length > 50 ? comment.content.substring(0, 50) + "..." : comment.content,
+          author: comment.user.username,
+          aiUsed: comment.aiUsed
+        }))
+      })),
+      stats
+    }, {
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+    });
+  } catch (error) {
+    console.error("Feed error:", error);
+    return Response.json({ error: "Failed to load feed" }, { status: 500 });
+  }
+}
+
+async function handleGetStats(prisma: PrismaClient): Promise<Response> {
+  try {
+    const userStats = await prisma.user.findMany({
+      include: {
+        _count: {
+          select: { posts: true }
+        }
+      },
+      orderBy: {
+        followers: 'desc'
+      },
+      take: 5
+    });
+
+    const postStats = await prisma.post.findMany({
+      orderBy: [
+        { likes: 'desc' },
+        { replies: 'desc' }
+      ],
+      take: 5,
+      include: {
+        user: {
+          select: {
+            username: true
+          }
+        }
+      }
+    });
+
+    const counts = {
+      users: await prisma.user.count(),
+      posts: await prisma.post.count(),
+      comments: await prisma.comment.count()
+    };
+
+    const aiStats = agent.getStats();
+
+    return Response.json({
+      storageStats: counts,
+      aiStats,
+      topUsers: userStats.map(u => ({
+        username: u.username,
+        personality: u.personality,
+        followers: u.followers.length,
+        following: u.following.length,
+        postCount: u._count.posts
+      })),
+      topPosts: postStats.map(p => ({
+        id: p.id,
+        content: p.content.length > 80 ? p.content.substring(0, 80) + "..." : p.content,
+        likes: p.likes.length,
+        replies: p.replies.length,
+        author: p.user.username
+      }))
+    }, {
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
+    });
+  } catch (error) {
+    console.error("Stats error:", error);
+    return Response.json({ error: "Failed to load stats" }, { status: 500 });
+  }
+}
+
+async function handleReset(prisma: PrismaClient): Promise<Response> {
+  try {
+    // Clear all data
+    await prisma.comment.deleteMany({});
+    await prisma.post.deleteMany({});
+    await prisma.user.deleteMany({});
+    
+    console.log("🗑️ PostgreSQL database reset complete");
     
     return Response.json({
       success: true,
@@ -533,12 +484,13 @@ async function handleReset(): Promise<Response> {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
     });
   } catch (error) {
+    console.error("Reset error:", error);
     return Response.json({ error: "Reset failed" }, { status: 500 });
   }
 }
 
 // Main router
-async function router(req: Request): Promise<Response> {
+async function router(req: Request, prisma: PrismaClient): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   
@@ -555,26 +507,27 @@ async function router(req: Request): Promise<Response> {
     }
     
     if (path === "/api/agent" && req.method === "POST") {
-      return await handleCreateAgent();
+      return await handleCreateAgent(prisma);
     }
     
     if (path === "/api/feed" && req.method === "GET") {
-      return await handleGetFeed();
+      return await handleGetFeed(prisma);
     }
     
     if (path === "/api/stats" && req.method === "GET") {
-      return await handleGetStats();
+      return await handleGetStats(prisma);
     }
     
     if (path === "/api/reset" && req.method === "DELETE") {
-      return await handleReset();
+      return await handleReset(prisma);
     }
     
     if (path === "/api/health") {
       return Response.json({ 
         ok: true, 
         aiConfigured: !!Deno.env.get("AI_API_KEY"),
-        dataFileExists: Deno.statSync("./social_data.json").isFile 
+        databaseConnected: true,
+        usingPostgreSQL: true
       }, { headers: corsHeaders });
     }
     
@@ -612,11 +565,48 @@ if (import.meta.main) {
   const port = parseInt(Deno.env.get("PORT") || "8000");
   const aiKey = Deno.env.get("AI_API_KEY");
   
-  console.log(`🚀 ECHT SOCIAL MEDIA für KI-Agenten`);
+  console.log(`🚀 POSTGRESQL SOCIAL MEDIA für KI-Agenten`);
   console.log(`🤖 KI-Key: ${aiKey ? "***konfiguriert***" : "nicht gesetzt"}`);
-  console.log(`📊 Persistente JSON-Datenbank: ./social_data.json`);
+  console.log(`🗄️  PostgreSQL Database via Prisma`);
   console.log(`🌐 Port: ${port}`);
-  console.log(`🧠 Echte Interaktionen: Reply, Follow, Kommentare`);
+  console.log(`🧠 Echte Interaktionen mit persistenter DB`);
   
-  Deno.serve({ port }, router);
+  // Initialize Prisma Client für Deno Deploy PostgreSQL
+  const prisma = new PrismaClient();
+  
+  // Test database connection mit intelligentem Logging
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    
+    // Prüfe ob wir auf Deno Deploy PostgreSQL sind
+    const postgresqlHost = Deno.env.get("POSTGRESQL_HOST");
+    const databaseUrl = Deno.env.get("DATABASE_URL");
+    
+    console.log("✅ PostgreSQL connection successful");
+    
+    if (postgresqlHost) {
+      console.log(`🗄️  Connected to Deno Deploy PostgreSQL: ${postgresqlHost}`);
+    } else if (databaseUrl) {
+      console.log("🗄️  Connected via DATABASE_URL");
+    } else {
+      console.log("🗄️  Connected to PostgreSQL database");
+    }
+    
+  } catch (error) {
+    console.error("❌ PostgreSQL connection failed:", error.message);
+    
+    // Hilfe für Deno Deploy Setup
+    const hasDbVars = Deno.env.get("POSTGRESQL_HOST") || Deno.env.get("DATABASE_URL");
+    
+    if (!hasDbVars) {
+      console.log("💡 Deno Deploy PostgreSQL Setup:");
+      console.log("   1. Database 'postgresql' wurde bereits erstellt?");
+      console.log("   2. Environment sollte automatisch POSTGRESQL_* Variablen haben");
+      console.log("   3. Falls nicht: Database Service in Deno Deploy Dashboard aktivieren");
+    }
+    
+    Deno.exit(1);
+  }
+  
+  Deno.serve({ port }, (req) => router(req, prisma));
 }
