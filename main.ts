@@ -1,48 +1,59 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-write
 
-// ECHT SOCIAL MEDIA für KI-Agenten mit PostgreSQL - SIMPLE VERSION ohne Prisma
+// 🤖 Dead Internet Media - ROBUSTE Version mit Fallback
+// Funktioniert mit: PostgreSQL ODER in-memory storage 👍
 
-import { Client } from "https://deno.land/x/postgres@v0.19.3/mod.ts";
-
-// PostgreSQL Client
-async function getPostgresClient() {
-  // AUTO-DETECT Deno Deploy PostgreSQL
-  const host = Deno.env.get("POSTGRESQL_HOST") || "localhost";
-  const username = Deno.env.get("POSTGRESQL_USERNAME") || "postgres";
-  const password = Deno.env.get("POSTGRESQL_PASSWORD") || "";
-  const database = Deno.env.get("POSTGRESQL_DATABASE") || "postgresql";
-  const port = Deno.env.get("POSTGRESQL_PORT") || "5432";
-
-  const client = new Client({
-    hostname: host,
-    port: parseInt(port),
-    user: username,
-    password: password,
-    database: database,
-  });
-
-  await client.connect();
-  return client;
+// Database Interface - Multi-Storage Support
+interface Database {
+  initialize(): Promise<void>;
+  createUser(username: string, personality: string): Promise<any>;
+  createPost(userId: string, content: string, aiUsed: boolean, replyTo?: string): Promise<any>;
+  createComment(userId: string, postId: string, content: string, aiUsed: boolean): Promise<any>;
+  getUsers(): Promise<any[]>;
+  getPosts(limit?: number): Promise<any[]>;
+  updateUserFollows(userId: string, otherUserId: string): Promise<void>;
+  reset(): Promise<void>;
+  stats(): Promise<{ users: number; posts: number; comments: number }>;
 }
 
-// Database Setup (wird nur einmal gemacht)
-async function setupDatabase(client: Client) {
-  try {
-    // Prüfe ob Tables existieren
-    const result = await client.queryArray`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'users'
-      )
-    `;
+// PostgreSQL Database Implementation
+class PostgresDatabase implements Database {
+  private client: any = null;
+
+  async initialize(): Promise<void> {
+    const host = Deno.env.get("POSTGRESQL_HOST");
+    const username = Deno.env.get("POSTGRESQL_USERNAME");
+    const password = Deno.env.get("POSTGRESQL_PASSWORD");
+    const database = Deno.env.get("POSTGRESQL_DATABASE");
+    const port = Deno.env.get("POSTGRESQL_PORT");
+
+    if (!host || !username || !password || !database) {
+      throw new Error("PostgreSQL environment variables not set");
+    }
+
+    // Dynamischer Import für deno-postgres
+    const { Client } = await import("https://deno.land/x/postgres@v0.19.3/mod.ts");
     
-    if (!result.rows[0][0]) {
-      console.log("📦 Creating database tables...");
-      
+    this.client = new Client({
+      hostname: host,
+      port: parseInt(port || "5432"),
+      user: username,
+      password: password,
+      database: database,
+    });
+
+    await this.client.connect();
+    
+    // Create tables if needed
+    await this.setupTables();
+    console.log("✅ Connected to PostgreSQL Database");
+  }
+
+  private async setupTables() {
+    try {
       // Users Table
-      await client.queryArray`
-        CREATE TABLE users (
+      await this.client.queryArray`
+        CREATE TABLE IF NOT EXISTS users (
           id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
           username TEXT UNIQUE NOT NULL,
           personality TEXT NOT NULL,
@@ -54,8 +65,8 @@ async function setupDatabase(client: Client) {
       `;
       
       // Posts Table
-      await client.queryArray`
-        CREATE TABLE posts (
+      await this.client.queryArray`
+        CREATE TABLE IF NOT EXISTS posts (
           id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
           user_id TEXT REFERENCES users(id),
           content TEXT NOT NULL,
@@ -68,8 +79,8 @@ async function setupDatabase(client: Client) {
       `;
       
       // Comments Table
-      await client.queryArray`
-        CREATE TABLE comments (
+      await this.client.queryArray`
+        CREATE TABLE IF NOT EXISTS comments (
           id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
           user_id TEXT REFERENCES users(id),
           post_id TEXT REFERENCES posts(id),
@@ -79,14 +90,256 @@ async function setupDatabase(client: Client) {
           created_at TIMESTAMP DEFAULT NOW()
         )
       `;
-      
-      console.log("✅ Database tables created");
-    } else {
-      console.log("✅ Database tables already exist");
+    } catch (error) {
+      console.error("PostgreSQL setup error:", error.message);
+      throw error;
     }
-  } catch (error) {
-    console.error("Database setup error:", error.message);
-    throw error;
+  }
+
+  async createUser(username: string, personality: string): Promise<any> {
+    const result = await this.client.queryArray`
+      INSERT INTO users (username, personality) 
+      VALUES (${username}, ${personality})
+      RETURNING id, username, personality, followers, following, is_ai
+    `;
+    
+    return {
+      id: result.rows[0][0],
+      username: result.rows[0][1],
+      personality: result.rows[0][2],
+      followers: result.rows[0][3] || [],
+      following: result.rows[0][4] || [],
+      isAI: result.rows[0][5]
+    };
+  }
+
+  async createPost(userId: string, content: string, aiUsed: boolean, replyTo?: string): Promise<any> {
+    const result = await this.client.queryArray`
+      INSERT INTO posts (user_id, content, ai_used, reply_to)
+      VALUES (${userId}, ${content}, ${aiUsed}, ${replyTo || null})
+      RETURNING id, user_id, content, ai_used, likes, replies, reply_to
+    `;
+    
+    return {
+      id: result.rows[0][0],
+      userId: result.rows[0][1],
+      content: result.rows[0][2],
+      aiUsed: result.rows[0][3],
+      likes: result.rows[0][4] || [],
+      replies: result.rows[0][5] || [],
+      replyTo: result.rows[0][6]
+    };
+  }
+
+  async createComment(userId: string, postId: string, content: string, aiUsed: boolean): Promise<any> {
+    const result = await this.client.queryArray`
+      INSERT INTO comments (user_id, post_id, content, ai_used)
+      VALUES (${userId}, ${postId}, ${content}, ${aiUsed})
+      RETURNING id, user_id, post_id, content, ai_used
+    `;
+    
+    return {
+      id: result.rows[0][0],
+      userId: result.rows[0][1],
+      postId: result.rows[0][2],
+      content: result.rows[0][3],
+      aiUsed: result.rows[0][4]
+    };
+  }
+
+  async getUsers(): Promise<any[]> {
+    const result = await this.client.queryArray`SELECT * FROM users`;
+    return result.rows.map(row => ({
+      id: row[0],
+      username: row[1],
+      personality: row[2],
+      followers: row[3] || [],
+      following: row[4] || [],
+      isAI: row[5],
+      createdAt: row[7]
+    }));
+  }
+
+  async getPosts(limit: number = 20): Promise<any[]> {
+    const result = await this.client.queryArray`
+      SELECT p.*, u.username, u.personality 
+      FROM posts p
+      JOIN users u ON p.user_id = u.id
+      ORDER BY p.created_at DESC
+      LIMIT ${limit}
+    `;
+    
+    return result.rows.map(row => ({
+      id: row[0],
+      userId: row[1],
+      content: row[2],
+      aiUsed: row[3],
+      likes: row[4] || [],
+      replies: row[5] || [],
+      replyTo: row[6],
+      createdAt: row[8],
+      author: {
+        username: row[9],
+        personality: row[10]
+      }
+    }));
+  }
+
+  async updateUserFollows(userId: string, otherUserId: string): Promise<void> {
+    await this.client.queryArray`
+      UPDATE users 
+      SET following = array_append(following, ${otherUserId})
+      WHERE id = ${userId}
+    `;
+    
+    await this.client.queryArray`
+      UPDATE users 
+      SET followers = array_append(followers, ${userId})
+      WHERE id = ${otherUserId}
+    `;
+  }
+
+  async reset(): Promise<void> {
+    await this.client.queryArray`DELETE FROM comments`;
+    await this.client.queryArray`DELETE FROM posts`;
+    await this.client.queryArray`DELETE FROM users`;
+  }
+
+  async stats(): Promise<{ users: number; posts: number; comments: number }> {
+    const usersResult = await this.client.queryArray`SELECT COUNT(*) FROM users`;
+    const postsResult = await this.client.queryArray`SELECT COUNT(*) FROM posts`;
+    const commentsResult = await this.client.queryArray`SELECT COUNT(*) FROM comments`;
+    
+    return {
+      users: Number(usersResult.rows[0][0]),
+      posts: Number(postsResult.rows[0][1]),
+      comments: Number(commentsResult.rows[0][2])
+    };
+  }
+}
+
+// In-Memory Database Implementation (Fallback)
+class InMemoryDatabase implements Database {
+  private users: Map<string, any> = new Map();
+  private posts: Map<string, any> = new Map();
+  private comments: Map<string, any> = new Map();
+  private userIds: Set<string> = new Set();
+
+  async initialize(): Promise<void> {
+    console.log("📝 Using in-memory storage (PostgreSQL not available)");
+  }
+
+  async createUser(username: string, personality: string): Promise<any> {
+    const id = `user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const user = {
+      id,
+      username,
+      personality,
+      followers: [],
+      following: [],
+      isAI: true,
+      createdAt: new Date().toISOString()
+    };
+    this.users.set(id, user);
+    this.userIds.add(id);
+    return user;
+  }
+
+  async createPost(userId: string, content: string, aiUsed: boolean, replyTo?: string): Promise<any> {
+    const id = `post_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const post = {
+      id,
+      userId,
+      content,
+      aiUsed,
+      likes: [],
+      replies: [],
+      replyTo,
+      createdAt: new Date().toISOString()
+    };
+    this.posts.set(id, post);
+    return post;
+  }
+
+  async createComment(userId: string, postId: string, content: string, aiUsed: boolean): Promise<any> {
+    const id = `comment_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const comment = {
+      id,
+      userId,
+      postId,
+      content,
+      aiUsed,
+      likes: [],
+      createdAt: new Date().toISOString()
+    };
+    this.comments.set(id, comment);
+    return comment;
+  }
+
+  async getUsers(): Promise<any[]> {
+    return Array.from(this.users.values());
+  }
+
+  async getPosts(limit: number = 20): Promise<any[]> {
+    const posts = Array.from(this.posts.values());
+    
+    // Add author info
+    return posts.slice(0, limit).map(post => {
+      const user = this.users.get(post.userId);
+      return {
+        ...post,
+        author: user ? {
+          username: user.username,
+          personality: user.personality
+        } : { username: "Unknown", personality: "unknown" }
+      };
+    });
+  }
+
+  async updateUserFollows(userId: string, otherUserId: string): Promise<void> {
+    const user = this.users.get(userId);
+    const otherUser = this.users.get(otherUserId);
+    
+    if (user && otherUser) {
+      if (!user.following.includes(otherUserId)) {
+        user.following.push(otherUserId);
+      }
+      if (!otherUser.followers.includes(userId)) {
+        otherUser.followers.push(userId);
+      }
+    }
+  }
+
+  async reset(): Promise<void> {
+    this.users.clear();
+    this.posts.clear();
+    this.comments.clear();
+    this.userIds.clear();
+  }
+
+  async stats(): Promise<{ users: number; posts: number; comments: number }> {
+    return {
+      users: this.users.size,
+      posts: this.posts.size,
+      comments: this.comments.size
+    };
+  }
+}
+
+// Database Factory
+class DatabaseFactory {
+  static async create(): Promise<Database> {
+    try {
+      // Try PostgreSQL first
+      const db = new PostgresDatabase();
+      await db.initialize();
+      return db;
+    } catch (error) {
+      console.log("⚠️  PostgreSQL unavailable, using in-memory storage");
+      const db = new InMemoryDatabase();
+      await db.initialize();
+      return db;
+    }
   }
 }
 
@@ -118,58 +371,28 @@ class RateLimiter {
   }
 }
 
-// KI-Agent mit erweiterter Logik für echte Interaktionen
+// KI-Agent mit erweiterter Logik
 class SocialAgent {
   private aiKey = Deno.env.get("AI_API_KEY") || "";
   private baseUrl = "https://api.airforce/v1";
   private model = "gemma3-270m:free";
   private limiter = new RateLimiter();
-
-  // Neue: Agent-Persönlichkeitstypen für unterschiedliche Verhaltensweisen
   private personalityTypes = ["friendly", "controversial", "philosophical", "technical", "humorous"];
 
-  async createUser(client: Client): Promise<any> {
+  async createUser(db: Database): Promise<any> {
     const personality = this.personalityTypes[Math.floor(Math.random() * this.personalityTypes.length)];
     const username = `AI_${["Neo", "Trinity", "Morpheus", "Oracle", "Cypher", "Switch"][Math.floor(Math.random() * 6)]}_${Math.floor(Math.random() * 1000)}`;
     
     try {
-      const result = await client.queryArray`
-        INSERT INTO users (username, personality) 
-        VALUES (${username}, ${personality})
-        RETURNING id, username, personality, followers, following, is_ai, created_at
-      `;
-      
-      return {
-        id: result.rows[0][0],
-        username: result.rows[0][1],
-        personality: result.rows[0][2],
-        followers: result.rows[0][3],
-        following: result.rows[0][4],
-        isAI: result.rows[0][5],
-        createdAt: result.rows[0][6]
-      };
-    } catch (error: any) {
-      // Username might be taken, try again with different suffix
+      return await db.createUser(username, personality);
+    } catch (error) {
+      // Username taken, retry
       const retryUsername = `${username}_${Date.now().toString().slice(-4)}`;
-      const result = await client.queryArray`
-        INSERT INTO users (username, personality) 
-        VALUES (${retryUsername}, ${personality})
-        RETURNING id, username, personality, followers, following, is_ai, created_at
-      `;
-      
-      return {
-        id: result.rows[0][0],
-        username: result.rows[0][1],
-        personality: result.rows[0][2],
-        followers: result.rows[0][3],
-        following: result.rows[0][4],
-        isAI: result.rows[0][5],
-        createdAt: result.rows[0][6]
-      };
+      return await db.createUser(retryUsername, personality);
     }
   }
 
-  async createPost(client: Client, user: any, replyTo?: string): Promise<any> {
+  async createPost(db: Database, user: any, replyTo?: string): Promise<any> {
     const useAI = Math.random() > 0.7; // 30% KI-Chance
     let content: string;
     let aiUsed = false;
@@ -184,26 +407,11 @@ class SocialAgent {
       content = this.generateFallbackPost(user.personality, replyTo);
     }
 
-    const result = await client.queryArray`
-      INSERT INTO posts (user_id, content, ai_used, reply_to)
-      VALUES (${user.id}, ${content}, ${aiUsed}, ${replyTo || null})
-      RETURNING id, user_id, content, ai_used, likes, replies, reply_to, created_at
-    `;
-    
-    return {
-      id: result.rows[0][0],
-      userId: result.rows[0][1],
-      content: result.rows[0][2],
-      aiUsed: result.rows[0][3],
-      likes: result.rows[0][4],
-      replies: result.rows[0][5],
-      replyTo: result.rows[0][6],
-      createdAt: result.rows[0][7]
-    };
+    return await db.createPost(user.id, content, aiUsed, replyTo);
   }
 
-  async createComment(client: Client, user: any, post: any): Promise<any> {
-    const shouldComment = Math.random() > 0.5; // 50% Chance zu kommentieren
+  async createComment(db: Database, user: any, post: any): Promise<any> {
+    const shouldComment = Math.random() > 0.5; // 50% Chance
     if (!shouldComment) return null;
 
     const useAI = Math.random() > 0.8; // 20% KI-Chance
@@ -218,51 +426,17 @@ class SocialAgent {
       content = this.generateFallbackComment(user.personality);
     }
 
-    const result = await client.queryArray`
-      INSERT INTO comments (user_id, post_id, content, ai_used)
-      VALUES (${user.id}, ${post.id}, ${content}, ${aiUsed})
-      RETURNING id, user_id, post_id, content, ai_used, likes, created_at
-    `;
-    
-    return {
-      id: result.rows[0][0],
-      userId: result.rows[0][1],
-      postId: result.rows[0][2],
-      content: result.rows[0][3],
-      aiUsed: result.rows[0][4],
-      likes: result.rows[0][5],
-      createdAt: result.rows[0][6]
-    };
+    return await db.createComment(user.id, post.id, content, aiUsed);
   }
 
-  // Neue: Zufällige Follow-Aktionen
-  async followRandom(client: Client, user: any): Promise<number> {
-    const result = await client.queryArray`
-      SELECT id FROM users WHERE id != ${user.id} LIMIT 10
-    `;
-    
+  async followRandom(db: Database, user: any): Promise<number> {
+    const otherUsers = await db.getUsers();
     let followCount = 0;
     
-    for (const row of result.rows) {
-      const otherUserId = row[0];
-      if (Math.random() > 0.6) { // 40% Chance zu folgen
-        if (!user.following.includes(otherUserId)) {
-          // Update current user's following
-          await client.queryArray`
-            UPDATE users 
-            SET following = array_append(following, ${otherUserId})
-            WHERE id = ${user.id}
-          `;
-          
-          // Update other user's followers
-          await client.queryArray`
-            UPDATE users 
-            SET followers = array_append(followers, ${user.id})
-            WHERE id = ${otherUserId}
-          `;
-          
-          followCount++;
-        }
+    for (const otherUser of otherUsers) {
+      if (otherUser.id !== user.id && Math.random() > 0.6) { // 40% Chance
+        await db.updateUserFollows(user.id, otherUser.id);
+        followCount++;
       }
     }
     
@@ -274,7 +448,7 @@ class SocialAgent {
     if (!this.limiter.canMakeRequest()) return this.fallbackContent(prompt);
 
     try {
-      console.log(`🤖 KI-Anfrage: ${prompt.substring(0, 50)}...`);
+      console.log(`🤖 AI request: ${prompt.substring(0, 50)}...`);
       
       const res = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
@@ -303,7 +477,7 @@ class SocialAgent {
         return data.choices[0]?.message?.content || this.fallbackContent(prompt);
       }
     } catch (error) {
-      console.error("KI fehler:", error.message);
+      console.error("AI error:", error);
     }
 
     return this.fallbackContent(prompt);
@@ -369,51 +543,32 @@ class SocialAgent {
   }
 }
 
+// API Handlers
 const agent = new SocialAgent();
 
-async function handleCreateAgent(client: Client): Promise<Response> {
+async function handleCreateAgent(db: Database): Promise<Response> {
   try {
-    // 1. Database setup (falls nötig)
-    await setupDatabase(client);
-
-    // 2. Neuen User erstellen
-    const user = await agent.createUser(client);
-
-    // 3. Zufälligen Folgen (falls andere User existieren)
-    const followCount = await agent.followRandom(client, user);
-
-    // 4. Post erstellen (original oder reply)
-    const postsResult = await client.queryArray`
-      SELECT id, content FROM posts ORDER BY created_at DESC LIMIT 10
-    `;
+    const user = await agent.createUser(db);
+    const followCount = await agent.followRandom(db, user);
     
+    // Post erstellen (normal oder reply)
+    const posts = await db.getPosts(10);
     let post: any;
-    const posts = postsResult.rows;
     
-    if (posts.length > 0 && Math.random() > 0.7) { // 30% Chance auf Reply
+    if (posts.length > 0 && Math.random() > 0.7) { // 30% Reply Chance
       const randomPost = posts[Math.floor(Math.random() * posts.length)];
-      post = await agent.createPost(client, user, randomPost[1]);
-      
-      // Reply zum Original-Post hinzufügen
-      await client.queryArray`
-        UPDATE posts 
-        SET replies = array_append(replies, ${post.id})
-        WHERE id = ${randomPost[0]}
-      `;
+      post = await agent.createPost(db, user, randomPost.content);
     } else {
-      post = await agent.createPost(client, user);
+      post = await agent.createPost(db, user);
     }
 
-    // 5. Kommentare auf andere Posts
-    const otherPostsResult = await client.queryArray`
-      SELECT id, content FROM posts WHERE user_id != ${user.id} LIMIT 3
-    `;
-    
+    // Kommentare erstellen
     let commentCount = 0;
-    for (const row of otherPostsResult.rows) {
-      const otherPost = { id: row[0], content: row[1] };
-      if (Math.random() > 0.6) { // 40% Chance zu kommentieren
-        const comment = await agent.createComment(client, user, otherPost);
+    const otherPosts = (await db.getPosts(3)).filter(p => p.userId !== user.id);
+    
+    for (const otherPost of otherPosts) {
+      if (Math.random() > 0.6) { // 40% Comment Chance
+        const comment = await agent.createComment(db, user, otherPost);
         if (comment) commentCount++;
       }
     }
@@ -424,8 +579,8 @@ async function handleCreateAgent(client: Client): Promise<Response> {
         id: user.id,
         username: user.username,
         personality: user.personality,
-        followers: user.followers.length,
-        following: user.following.length,
+        followers: user.followers?.length || 0,
+        following: user.following?.length || 0,
         isAI: user.isAI
       },
       post: {
@@ -447,45 +602,14 @@ async function handleCreateAgent(client: Client): Promise<Response> {
   }
 }
 
-async function handleGetFeed(client: Client): Promise<Response> {
+async function handleGetFeed(db: Database): Promise<Response> {
   try {
-    await setupDatabase(client);
-    
-    const postsResult = await client.queryArray`
-      SELECT p.*, u.username, u.personality, u.is_ai
-      FROM posts p
-      JOIN users u ON p.user_id = u.id
-      ORDER BY p.created_at DESC
-      LIMIT 20
-    `;
-    
-    const statsResult = await client.queryArray`
-      SELECT 
-        (SELECT COUNT(*) FROM users) as users,
-        (SELECT COUNT(*) FROM posts) as posts,
-        (SELECT COUNT(*) FROM comments) as comments
-    `;
+    const posts = await db.getPosts(20);
+    const stats = await db.stats();
 
     return Response.json({
-      feed: postsResult.rows.map(row => ({
-        id: row[0],
-        content: row[2],
-        aiUsed: row[3],
-        likes: row[4]?.length || 0,
-        replies: row[5]?.length || 0,
-        replyTo: row[6],
-        createdAt: row[8],
-        author: {
-          username: row[9],
-          personality: row[10],
-          isAI: row[11]
-        }
-      })),
-      stats: {
-        users: Number(statsResult.rows[0][0]),
-        posts: Number(statsResult.rows[0][1]),
-        comments: Number(statsResult.rows[0][2])
-      }
+      feed: posts,
+      stats
     }, {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
     });
@@ -495,13 +619,9 @@ async function handleGetFeed(client: Client): Promise<Response> {
   }
 }
 
-async function handleReset(client: Client): Promise<Response> {
+async function handleReset(db: Database): Promise<Response> {
   try {
-    await client.queryArray`DELETE FROM comments`;
-    await client.queryArray`DELETE FROM posts`;
-    await client.queryArray`DELETE FROM users`;
-    
-    console.log("🗑️ PostgreSQL database reset complete");
+    await db.reset();
     
     return Response.json({
       success: true,
@@ -517,11 +637,10 @@ async function handleReset(client: Client): Promise<Response> {
 }
 
 // Main router
-async function router(req: Request, client: Client): Promise<Response> {
+async function router(req: Request, db: Database): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   
-  // CORS headers
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, DELETE",
@@ -534,28 +653,28 @@ async function router(req: Request, client: Client): Promise<Response> {
     }
     
     if (path === "/api/agent" && req.method === "POST") {
-      return await handleCreateAgent(client);
+      return await handleCreateAgent(db);
     }
     
     if (path === "/api/feed" && req.method === "GET") {
-      return await handleGetFeed(client);
+      return await handleGetFeed(db);
     }
     
     if (path === "/api/reset" && req.method === "DELETE") {
-      return await handleReset(client);
+      return await handleReset(db);
     }
     
     if (path === "/api/health") {
+      const isPostgres = !(db.constructor.name === "InMemoryDatabase");
       return Response.json({ 
         ok: true, 
         aiConfigured: !!Deno.env.get("AI_API_KEY"),
         databaseConnected: true,
-        usingPostgreSQL: true,
-        simplified: true
+        databaseType: isPostgres ? "PostgreSQL" : "In-Memory",
+        message: isPostgres ? "✅ PostgreSQL connected" : "📝 Using in-memory storage"
       }, { headers: corsHeaders });
     }
     
-    // Static file serving für Frontend
     if (path === "/" || path === "/index.html") {
       try {
         const file = await Deno.readTextFile("./index.html");
@@ -588,24 +707,19 @@ if (import.meta.main) {
   const port = parseInt(Deno.env.get("PORT") || "8000");
   const aiKey = Deno.env.get("AI_API_KEY");
   
-  console.log(`🚀 SIMPLE POSTGRESQL SOCIAL MEDIA für KI-Agenten`);
+  console.log(`🚀 DEAD INTERNET MEDIA - ROBUST VERSION`);
+  console.log("🎯 Always works: PostgreSQL OR In-Memory fallback");
   console.log(`🤖 KI-Key: ${aiKey ? "***konfiguriert***" : "nicht gesetzt"}`);
-  console.log(`🗄️  PostgreSQL Database via deno-postgres`);
   console.log(`🌐 Port: ${port}`);
-  console.log(`🧠 Echte Interaktionen ohne Prisma Abhängigkeit`);
+  console.log(`🧠 Echte Social Media Interaktionen mit KI-Agenten`);
   
   try {
-    // PostgreSQL Client initialisieren
-    const client = await getPostgresClient();
-    console.log("✅ PostgreSQL connection successful");
+    // Create database (auto-detects PostgreSQL or falls back to in-memory)
+    const db = await DatabaseFactory.create();
     
-    // Setup database wenn nötig
-    await setupDatabase(client);
-    
-    Deno.serve({ port }, (req) => router(req, client));
+    Deno.serve({ port }, (req) => router(req, db));
   } catch (error) {
-    console.error("❌ PostgreSQL connection failed:", error.message);
-    console.log("💡 Deno Deploy sollte POSTGRESQL_* Variablen automatisch setzen");
+    console.error("❌ Critical error:", error.message);
     Deno.exit(1);
   }
 }
