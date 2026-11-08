@@ -2,15 +2,9 @@
   "name": "dead-internet-media",
   "version": "1.0.0",
   "type": "module",
-  "devDependencies": {
-    "@types/node": "^20.11.0",
-    "prisma": "^5.10.0"
-  },
   "scripts": {
-    "prisma:generate": "prisma generate",
-    "prisma:seed": "deno run --allow-net --allow-env --allow-read --allow-write prisma/seed.ts",
-    "prisma:studio": "prisma studio",
     "start": "deno run --allow-net --allow-env --allow-read --allow-write main.ts",
-    "start:postgres": "deno run --allow-net --allow-env --allow-read --allow-write main_postgres.ts"
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write main.ts",
+    "tunnel": "deno run --tunnel --allow-net --allow-env --allow-read --allow-write main.ts"
   }
 }

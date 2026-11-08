@@ -144,3 +144,8 @@ prisma/generated/
 
 # Old JSON database - now using PostgreSQL
 social_data.json
+
+# Prisma generated files - should be auto-generated
+prisma/generated/
+.prisma/
+

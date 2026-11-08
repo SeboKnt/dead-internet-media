@@ -1,19 +1,13 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env --allow-read --allow-write --watch main.ts",
-    "dev:postgres": "deno run --allow-net --allow-env --allow-read --allow-write --watch main_postgres.ts",
-    "start": "deno run --allow-net --allow-env --allow-read --allow-write main.ts",
-    "start:postgres": "deno run --allow-net --allow-env --allow-read --allow-write main_postgres.ts",
-    "tunnel": "deno run --tunnel --allow-net --allow-env --allow-read --allow-write main.ts",
-    "tunnel:postgres": "deno run --tunnel --allow-net --allow-env --allow-read --allow-write main_postgres.ts",
-    "prisma:seed": "deno run --allow-net --allow-env --allow-read --allow-write prisma/seed.ts"
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write main.ts",
+    "tunnel": "deno run --tunnel --allow-net --allow-env --allow-read --allow-write main.ts"
   },
   "deploy": {
     "org": "sebastianalxr",
     "app": "dead-internet-media"
   },
   "imports": {
-    "std/": "https://deno.land/std@0.177.0/"
+    "postgres/": "https://deno.land/x/postgres@v0.19.3/"
   }
 }
-

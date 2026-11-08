@@ -1,8 +1,94 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env --allow-read --allow-write
 
-// ECHT SOCIAL MEDIA für KI-Agenten mit PostgreSQL Persistenz
+// ECHT SOCIAL MEDIA für KI-Agenten mit PostgreSQL - SIMPLE VERSION ohne Prisma
 
-import { PrismaClient } from "./prisma/generated/client/deno/edge.ts";
+import { Client } from "https://deno.land/x/postgres@v0.19.3/mod.ts";
+
+// PostgreSQL Client
+async function getPostgresClient() {
+  // AUTO-DETECT Deno Deploy PostgreSQL
+  const host = Deno.env.get("POSTGRESQL_HOST") || "localhost";
+  const username = Deno.env.get("POSTGRESQL_USERNAME") || "postgres";
+  const password = Deno.env.get("POSTGRESQL_PASSWORD") || "";
+  const database = Deno.env.get("POSTGRESQL_DATABASE") || "postgresql";
+  const port = Deno.env.get("POSTGRESQL_PORT") || "5432";
+
+  const client = new Client({
+    hostname: host,
+    port: parseInt(port),
+    user: username,
+    password: password,
+    database: database,
+  });
+
+  await client.connect();
+  return client;
+}
+
+// Database Setup (wird nur einmal gemacht)
+async function setupDatabase(client: Client) {
+  try {
+    // Prüfe ob Tables existieren
+    const result = await client.queryArray`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'users'
+      )
+    `;
+    
+    if (!result.rows[0][0]) {
+      console.log("📦 Creating database tables...");
+      
+      // Users Table
+      await client.queryArray`
+        CREATE TABLE users (
+          id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          username TEXT UNIQUE NOT NULL,
+          personality TEXT NOT NULL,
+          followers TEXT[] DEFAULT '{}',
+          following TEXT[] DEFAULT '{}',
+          is_ai BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `;
+      
+      // Posts Table
+      await client.queryArray`
+        CREATE TABLE posts (
+          id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          user_id TEXT REFERENCES users(id),
+          content TEXT NOT NULL,
+          ai_used BOOLEAN DEFAULT FALSE,
+          likes TEXT[] DEFAULT '{}',
+          replies TEXT[] DEFAULT '{}',
+          reply_to TEXT,
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `;
+      
+      // Comments Table
+      await client.queryArray`
+        CREATE TABLE comments (
+          id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          user_id TEXT REFERENCES users(id),
+          post_id TEXT REFERENCES posts(id),
+          content TEXT NOT NULL,
+          ai_used BOOLEAN DEFAULT FALSE,
+          likes TEXT[] DEFAULT '{}',
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `;
+      
+      console.log("✅ Database tables created");
+    } else {
+      console.log("✅ Database tables already exist");
+    }
+  } catch (error) {
+    console.error("Database setup error:", error.message);
+    throw error;
+  }
+}
 
 // Rate limiting für Airforce API
 class RateLimiter {
@@ -42,36 +128,48 @@ class SocialAgent {
   // Neue: Agent-Persönlichkeitstypen für unterschiedliche Verhaltensweisen
   private personalityTypes = ["friendly", "controversial", "philosophical", "technical", "humorous"];
 
-  async createUser(prisma: PrismaClient): Promise<any> {
+  async createUser(client: Client): Promise<any> {
     const personality = this.personalityTypes[Math.floor(Math.random() * this.personalityTypes.length)];
     const username = `AI_${["Neo", "Trinity", "Morpheus", "Oracle", "Cypher", "Switch"][Math.floor(Math.random() * 6)]}_${Math.floor(Math.random() * 1000)}`;
     
     try {
-      const user = await prisma.user.create({
-        data: {
-          username,
-          personality,
-          isAI: true
-        }
-      });
+      const result = await client.queryArray`
+        INSERT INTO users (username, personality) 
+        VALUES (${username}, ${personality})
+        RETURNING id, username, personality, followers, following, is_ai, created_at
+      `;
       
-      return user;
+      return {
+        id: result.rows[0][0],
+        username: result.rows[0][1],
+        personality: result.rows[0][2],
+        followers: result.rows[0][3],
+        following: result.rows[0][4],
+        isAI: result.rows[0][5],
+        createdAt: result.rows[0][6]
+      };
     } catch (error: any) {
       // Username might be taken, try again with different suffix
       const retryUsername = `${username}_${Date.now().toString().slice(-4)}`;
-      const user = await prisma.user.create({
-        data: {
-          username: retryUsername,
-          personality,
-          isAI: true
-        }
-      });
+      const result = await client.queryArray`
+        INSERT INTO users (username, personality) 
+        VALUES (${retryUsername}, ${personality})
+        RETURNING id, username, personality, followers, following, is_ai, created_at
+      `;
       
-      return user;
+      return {
+        id: result.rows[0][0],
+        username: result.rows[0][1],
+        personality: result.rows[0][2],
+        followers: result.rows[0][3],
+        following: result.rows[0][4],
+        isAI: result.rows[0][5],
+        createdAt: result.rows[0][6]
+      };
     }
   }
 
-  async createPost(prisma: PrismaClient, user: any, replyTo?: string): Promise<any> {
+  async createPost(client: Client, user: any, replyTo?: string): Promise<any> {
     const useAI = Math.random() > 0.7; // 30% KI-Chance
     let content: string;
     let aiUsed = false;
@@ -86,17 +184,25 @@ class SocialAgent {
       content = this.generateFallbackPost(user.personality, replyTo);
     }
 
-    return await prisma.post.create({
-      data: {
-        userId: user.id,
-        content,
-        aiUsed,
-        replyTo: replyTo || null
-      }
-    });
+    const result = await client.queryArray`
+      INSERT INTO posts (user_id, content, ai_used, reply_to)
+      VALUES (${user.id}, ${content}, ${aiUsed}, ${replyTo || null})
+      RETURNING id, user_id, content, ai_used, likes, replies, reply_to, created_at
+    `;
+    
+    return {
+      id: result.rows[0][0],
+      userId: result.rows[0][1],
+      content: result.rows[0][2],
+      aiUsed: result.rows[0][3],
+      likes: result.rows[0][4],
+      replies: result.rows[0][5],
+      replyTo: result.rows[0][6],
+      createdAt: result.rows[0][7]
+    };
   }
 
-  async createComment(prisma: PrismaClient, user: any, post: any): Promise<any> {
+  async createComment(client: Client, user: any, post: any): Promise<any> {
     const shouldComment = Math.random() > 0.5; // 50% Chance zu kommentieren
     if (!shouldComment) return null;
 
@@ -112,43 +218,48 @@ class SocialAgent {
       content = this.generateFallbackComment(user.personality);
     }
 
-    return await prisma.comment.create({
-      data: {
-        userId: user.id,
-        postId: post.id,
-        content,
-        aiUsed
-      }
-    });
+    const result = await client.queryArray`
+      INSERT INTO comments (user_id, post_id, content, ai_used)
+      VALUES (${user.id}, ${post.id}, ${content}, ${aiUsed})
+      RETURNING id, user_id, post_id, content, ai_used, likes, created_at
+    `;
+    
+    return {
+      id: result.rows[0][0],
+      userId: result.rows[0][1],
+      postId: result.rows[0][2],
+      content: result.rows[0][3],
+      aiUsed: result.rows[0][4],
+      likes: result.rows[0][5],
+      createdAt: result.rows[0][6]
+    };
   }
 
   // Neue: Zufällige Follow-Aktionen
-  async followRandom(prisma: PrismaClient, user: any): Promise<number> {
-    const otherUsers = await prisma.user.findMany({
-      where: { id: { not: user.id } },
-      take: 10
-    });
+  async followRandom(client: Client, user: any): Promise<number> {
+    const result = await client.queryArray`
+      SELECT id FROM users WHERE id != ${user.id} LIMIT 10
+    `;
     
     let followCount = 0;
     
-    for (const otherUser of otherUsers) {
+    for (const row of result.rows) {
+      const otherUserId = row[0];
       if (Math.random() > 0.6) { // 40% Chance zu folgen
-        if (!user.following.includes(otherUser.id)) {
+        if (!user.following.includes(otherUserId)) {
           // Update current user's following
-          await prisma.user.update({
-            where: { id: user.id },
-            data: {
-              following: { push: otherUser.id }
-            }
-          });
+          await client.queryArray`
+            UPDATE users 
+            SET following = array_append(following, ${otherUserId})
+            WHERE id = ${user.id}
+          `;
           
           // Update other user's followers
-          await prisma.user.update({
-            where: { id: otherUser.id },
-            data: {
-              followers: { push: user.id }
-            }
-          });
+          await client.queryArray`
+            UPDATE users 
+            SET followers = array_append(followers, ${user.id})
+            WHERE id = ${otherUserId}
+          `;
           
           followCount++;
         }
@@ -260,61 +371,62 @@ class SocialAgent {
 
 const agent = new SocialAgent();
 
-// API Handlers mit PostgreSQL
-async function handleCreateAgent(prisma: PrismaClient): Promise<Response> {
+async function handleCreateAgent(client: Client): Promise<Response> {
   try {
-    // 1. Neuen User erstellen
-    const user = await agent.createUser(prisma);
-    const freshUser = await prisma.user.findUnique({ where: { id: user.id } });
+    // 1. Database setup (falls nötig)
+    await setupDatabase(client);
 
-    // 2. Zufälligen Folgen (falls andere User existieren)
-    const followCount = await agent.followRandom(prisma, freshUser);
+    // 2. Neuen User erstellen
+    const user = await agent.createUser(client);
 
-    // 3. Post erstellen (original oder reply)
-    const posts = await prisma.post.findMany({ take: 10, orderBy: { createdAt: 'desc' } });
+    // 3. Zufälligen Folgen (falls andere User existieren)
+    const followCount = await agent.followRandom(client, user);
+
+    // 4. Post erstellen (original oder reply)
+    const postsResult = await client.queryArray`
+      SELECT id, content FROM posts ORDER BY created_at DESC LIMIT 10
+    `;
+    
     let post: any;
+    const posts = postsResult.rows;
     
     if (posts.length > 0 && Math.random() > 0.7) { // 30% Chance auf Reply
       const randomPost = posts[Math.floor(Math.random() * posts.length)];
-      post = await agent.createPost(prisma, freshUser, randomPost.content);
+      post = await agent.createPost(client, user, randomPost[1]);
       
       // Reply zum Original-Post hinzufügen
-      await prisma.post.update({
-        where: { id: randomPost.id },
-        data: {
-          replies: { push: post.id }
-        }
-      });
+      await client.queryArray`
+        UPDATE posts 
+        SET replies = array_append(replies, ${post.id})
+        WHERE id = ${randomPost[0]}
+      `;
     } else {
-      post = await agent.createPost(prisma, freshUser);
+      post = await agent.createPost(client, user);
     }
 
-    // 4. Kommentare auf andere Posts (ECHTE Interaktion!)
-    const otherPosts = await prisma.post.findMany({
-      where: { userId: { not: user.id } },
-      take: 3
-    });
+    // 5. Kommentare auf andere Posts
+    const otherPostsResult = await client.queryArray`
+      SELECT id, content FROM posts WHERE user_id != ${user.id} LIMIT 3
+    `;
     
-    const comments: any[] = [];
-    
-    for (const otherPost of otherPosts) {
+    let commentCount = 0;
+    for (const row of otherPostsResult.rows) {
+      const otherPost = { id: row[0], content: row[1] };
       if (Math.random() > 0.6) { // 40% Chance zu kommentieren
-        const comment = await agent.createComment(prisma, freshUser, otherPost);
-        if (comment) {
-          comments.push(comment);
-        }
+        const comment = await agent.createComment(client, user, otherPost);
+        if (comment) commentCount++;
       }
     }
 
     return Response.json({
       success: true,
       user: {
-        id: freshUser.id,
-        username: freshUser.username,
-        personality: freshUser.personality,
-        followers: freshUser.followers.length,
-        following: freshUser.following.length,
-        isAI: freshUser.isAI
+        id: user.id,
+        username: user.username,
+        personality: user.personality,
+        followers: user.followers.length,
+        following: user.following.length,
+        isAI: user.isAI
       },
       post: {
         id: post.id,
@@ -322,12 +434,8 @@ async function handleCreateAgent(prisma: PrismaClient): Promise<Response> {
         aiUsed: post.aiUsed,
         replyTo: post.replyTo
       },
-      comments: comments.length,
-      newFollows: followCount,
-      aiUsage: {
-        post: post.aiUsed,
-        comments: comments.filter(c => c.aiUsed).length
-      }
+      comments: commentCount,
+      newFollows: followCount
     }, {
       status: 201,
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
@@ -339,62 +447,45 @@ async function handleCreateAgent(prisma: PrismaClient): Promise<Response> {
   }
 }
 
-async function handleGetFeed(prisma: PrismaClient): Promise<Response> {
+async function handleGetFeed(client: Client): Promise<Response> {
   try {
-    const posts = await prisma.post.findMany({
-      take: 20,
-      orderBy: { createdAt: 'desc' },
-      include: {
-        user: {
-          select: {
-            username: true,
-            personality: true,
-            isAI: true
-          }
-        },
-        comments: {
-          take: 2,
-          include: {
-            user: {
-              select: {
-                username: true
-              }
-            }
-          }
-        }
-      }
-    });
+    await setupDatabase(client);
     
-    const stats = {
-      users: await prisma.user.count(),
-      posts: await prisma.post.count(),
-      comments: await prisma.comment.count(),
-      totalInteractions: await prisma.post.aggregate({
-        _sum: {
-          _all: true
-        }
-      })
-    };
+    const postsResult = await client.queryArray`
+      SELECT p.*, u.username, u.personality, u.is_ai
+      FROM posts p
+      JOIN users u ON p.user_id = u.id
+      ORDER BY p.created_at DESC
+      LIMIT 20
+    `;
+    
+    const statsResult = await client.queryArray`
+      SELECT 
+        (SELECT COUNT(*) FROM users) as users,
+        (SELECT COUNT(*) FROM posts) as posts,
+        (SELECT COUNT(*) FROM comments) as comments
+    `;
 
     return Response.json({
-      feed: posts.map(post => ({
-        id: post.id,
-        content: post.content,
-        aiUsed: post.aiUsed,
-        likes: post.likes.length,
-        replies: post.replies.length,
-        replyTo: post.replyTo,
-        createdAt: post.createdAt,
-        author: post.user,
-        commentCount: post.comments.length,
-        previewComments: post.comments.map(comment => ({
-          id: comment.id,
-          content: comment.content.length > 50 ? comment.content.substring(0, 50) + "..." : comment.content,
-          author: comment.user.username,
-          aiUsed: comment.aiUsed
-        }))
+      feed: postsResult.rows.map(row => ({
+        id: row[0],
+        content: row[2],
+        aiUsed: row[3],
+        likes: row[4]?.length || 0,
+        replies: row[5]?.length || 0,
+        replyTo: row[6],
+        createdAt: row[8],
+        author: {
+          username: row[9],
+          personality: row[10],
+          isAI: row[11]
+        }
       })),
-      stats
+      stats: {
+        users: Number(statsResult.rows[0][0]),
+        posts: Number(statsResult.rows[0][1]),
+        comments: Number(statsResult.rows[0][2])
+      }
     }, {
       headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
     });
@@ -404,75 +495,11 @@ async function handleGetFeed(prisma: PrismaClient): Promise<Response> {
   }
 }
 
-async function handleGetStats(prisma: PrismaClient): Promise<Response> {
+async function handleReset(client: Client): Promise<Response> {
   try {
-    const userStats = await prisma.user.findMany({
-      include: {
-        _count: {
-          select: { posts: true }
-        }
-      },
-      orderBy: {
-        followers: 'desc'
-      },
-      take: 5
-    });
-
-    const postStats = await prisma.post.findMany({
-      orderBy: [
-        { likes: 'desc' },
-        { replies: 'desc' }
-      ],
-      take: 5,
-      include: {
-        user: {
-          select: {
-            username: true
-          }
-        }
-      }
-    });
-
-    const counts = {
-      users: await prisma.user.count(),
-      posts: await prisma.post.count(),
-      comments: await prisma.comment.count()
-    };
-
-    const aiStats = agent.getStats();
-
-    return Response.json({
-      storageStats: counts,
-      aiStats,
-      topUsers: userStats.map(u => ({
-        username: u.username,
-        personality: u.personality,
-        followers: u.followers.length,
-        following: u.following.length,
-        postCount: u._count.posts
-      })),
-      topPosts: postStats.map(p => ({
-        id: p.id,
-        content: p.content.length > 80 ? p.content.substring(0, 80) + "..." : p.content,
-        likes: p.likes.length,
-        replies: p.replies.length,
-        author: p.user.username
-      }))
-    }, {
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" }
-    });
-  } catch (error) {
-    console.error("Stats error:", error);
-    return Response.json({ error: "Failed to load stats" }, { status: 500 });
-  }
-}
-
-async function handleReset(prisma: PrismaClient): Promise<Response> {
-  try {
-    // Clear all data
-    await prisma.comment.deleteMany({});
-    await prisma.post.deleteMany({});
-    await prisma.user.deleteMany({});
+    await client.queryArray`DELETE FROM comments`;
+    await client.queryArray`DELETE FROM posts`;
+    await client.queryArray`DELETE FROM users`;
     
     console.log("🗑️ PostgreSQL database reset complete");
     
@@ -490,7 +517,7 @@ async function handleReset(prisma: PrismaClient): Promise<Response> {
 }
 
 // Main router
-async function router(req: Request, prisma: PrismaClient): Promise<Response> {
+async function router(req: Request, client: Client): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
   
@@ -507,19 +534,15 @@ async function router(req: Request, prisma: PrismaClient): Promise<Response> {
     }
     
     if (path === "/api/agent" && req.method === "POST") {
-      return await handleCreateAgent(prisma);
+      return await handleCreateAgent(client);
     }
     
     if (path === "/api/feed" && req.method === "GET") {
-      return await handleGetFeed(prisma);
-    }
-    
-    if (path === "/api/stats" && req.method === "GET") {
-      return await handleGetStats(prisma);
+      return await handleGetFeed(client);
     }
     
     if (path === "/api/reset" && req.method === "DELETE") {
-      return await handleReset(prisma);
+      return await handleReset(client);
     }
     
     if (path === "/api/health") {
@@ -527,7 +550,8 @@ async function router(req: Request, prisma: PrismaClient): Promise<Response> {
         ok: true, 
         aiConfigured: !!Deno.env.get("AI_API_KEY"),
         databaseConnected: true,
-        usingPostgreSQL: true
+        usingPostgreSQL: true,
+        simplified: true
       }, { headers: corsHeaders });
     }
     
@@ -547,8 +571,7 @@ async function router(req: Request, prisma: PrismaClient): Promise<Response> {
       error: "Not found",
       availableRoutes: [
         "POST /api/agent - Create new AI agent with interactions",
-        "GET  /api/feed - Get social feed with comments",
-        "GET  /api/stats - Get statistics and leaderboards",
+        "GET  /api/feed - Get social feed",
         "DELETE /api/reset - Reset database",
         "GET  /api/health - Health check"
       ]
@@ -565,48 +588,24 @@ if (import.meta.main) {
   const port = parseInt(Deno.env.get("PORT") || "8000");
   const aiKey = Deno.env.get("AI_API_KEY");
   
-  console.log(`🚀 POSTGRESQL SOCIAL MEDIA für KI-Agenten`);
+  console.log(`🚀 SIMPLE POSTGRESQL SOCIAL MEDIA für KI-Agenten`);
   console.log(`🤖 KI-Key: ${aiKey ? "***konfiguriert***" : "nicht gesetzt"}`);
-  console.log(`🗄️  PostgreSQL Database via Prisma`);
+  console.log(`🗄️  PostgreSQL Database via deno-postgres`);
   console.log(`🌐 Port: ${port}`);
-  console.log(`🧠 Echte Interaktionen mit persistenter DB`);
+  console.log(`🧠 Echte Interaktionen ohne Prisma Abhängigkeit`);
   
-  // Initialize Prisma Client für Deno Deploy PostgreSQL
-  const prisma = new PrismaClient();
-  
-  // Test database connection mit intelligentem Logging
   try {
-    await prisma.$queryRaw`SELECT 1`;
-    
-    // Prüfe ob wir auf Deno Deploy PostgreSQL sind
-    const postgresqlHost = Deno.env.get("POSTGRESQL_HOST");
-    const databaseUrl = Deno.env.get("DATABASE_URL");
-    
+    // PostgreSQL Client initialisieren
+    const client = await getPostgresClient();
     console.log("✅ PostgreSQL connection successful");
     
-    if (postgresqlHost) {
-      console.log(`🗄️  Connected to Deno Deploy PostgreSQL: ${postgresqlHost}`);
-    } else if (databaseUrl) {
-      console.log("🗄️  Connected via DATABASE_URL");
-    } else {
-      console.log("🗄️  Connected to PostgreSQL database");
-    }
+    // Setup database wenn nötig
+    await setupDatabase(client);
     
+    Deno.serve({ port }, (req) => router(req, client));
   } catch (error) {
     console.error("❌ PostgreSQL connection failed:", error.message);
-    
-    // Hilfe für Deno Deploy Setup
-    const hasDbVars = Deno.env.get("POSTGRESQL_HOST") || Deno.env.get("DATABASE_URL");
-    
-    if (!hasDbVars) {
-      console.log("💡 Deno Deploy PostgreSQL Setup:");
-      console.log("   1. Database 'postgresql' wurde bereits erstellt?");
-      console.log("   2. Environment sollte automatisch POSTGRESQL_* Variablen haben");
-      console.log("   3. Falls nicht: Database Service in Deno Deploy Dashboard aktivieren");
-    }
-    
+    console.log("💡 Deno Deploy sollte POSTGRESQL_* Variablen automatisch setzen");
     Deno.exit(1);
   }
-  
-  Deno.serve({ port }, (req) => router(req, prisma));
 }
