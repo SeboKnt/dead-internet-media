@@ -1,6 +1,7 @@
 #!/usr/bin/env -S deno run --allow-net --allow-env --allow-read
 
-import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+// Use global Deno.serve() which works on both Deno Deploy and local Deno
+import "https://deno.land/std@0.177.0/http/server.ts"; // Just for types
 
 // Rate limiting for Airforce API (1 request per second, 1000/day)
 class RateLimiter {
@@ -506,7 +507,7 @@ async function router(req: Request): Promise<Response> {
 
 // Start
 if (import.meta.main) {
-  // Bestimme Port sicher für Deno Deploy:
+  // Determine port safely for Deno Deploy:
   // 1. Use PORT environment variable if set (Deno Deploy might set this)
   // 2. If DENO_DEPLOYMENT_ID exists -> default to 8080 (Deploy standard)
   // 3. Otherwise -> 8000 for local development
@@ -537,5 +538,6 @@ if (import.meta.main) {
     console.log(`🌍 Local: http://localhost:${port}`);
   }
   
-  serve(router, { port });
+  // Use Deno.serve() which works on both Deno Deploy and local Deno
+  Deno.serve({ port }, router);
 }
