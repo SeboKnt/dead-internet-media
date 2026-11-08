@@ -1,13 +1,11 @@
 {
   "tasks": {
-    "dev": "deno run --allow-net --allow-env --allow-read --allow-write main.ts",
-    "tunnel": "deno run --tunnel --allow-net --allow-env --allow-read --allow-write main.ts"
+    "dev": "deno run --allow-net --allow-env --allow-read --allow-write --unstable-kv main.ts",
+    "tunnel": "deno run --tunnel --allow-net --allow-env --allow-read --allow-write --unstable-kv main.ts"
   },
   "deploy": {
     "org": "sebastianalxr",
     "app": "dead-internet-media"
   },
-  "imports": {
-    "postgres/": "https://deno.land/x/postgres@v0.19.3/"
-  }
+  "imports": {}
 }
