@@ -506,6 +506,7 @@ async function router(req: Request): Promise<Response> {
 
 // Start
 if (import.meta.main) {
+  // Deno Deploy provides PORT environment variable
   const port = parseInt(Deno.env.get("PORT") || "8000");
   const aiKey = Deno.env.get("AI_API_KEY");
   
@@ -514,7 +515,7 @@ if (import.meta.main) {
   console.log(`📊 Rate limiting: 1 request/second, 1000/day`);
   console.log(`🌐 Base URL: https://api.airforce/v1`);
   console.log(`🧠 Model: gemma3-270m:free (KOSTENLOS!)`);
-  console.log(`🌍 Frontend: http://localhost:${port}`);
+  console.log(`🌍 Available at: ${Deno.env.get("DENO_DEPLOYMENT_ID") ? "https://" + Deno.env.get("DENO_DEPLOYMENT_ID") + ".deno.dev" : `http://localhost:${port}`}`);
   
   serve(router, { port });
 }
