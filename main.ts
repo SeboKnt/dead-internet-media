@@ -119,7 +119,7 @@ class Agent {
   }
   
   private async aiContent(prompt: string): Promise<string> {
-    if (!this.aiKey) return this.fallbackContent(prompt);
+     if (!this.aiKey) return this.fallbackContent(prompt);
     
     // Check rate limit BEFORE making request
     if (!this.limiter.canMakeRequest()) {
@@ -282,85 +282,183 @@ async function parseBody(req: Request): Promise<any> {
   }
 }
 
-// Router
-async function router(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-  const path = url.pathname;
-  
-  // CORS
+// Serve static files
+async function serveStatic(path: string): Promise<Response> {
+  try {
+    if (path === "/" || path === "/index.html") {
+      const file = await Deno.readTextFile("index.html");
+      return new Response(file, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+        },
+      });
+    }
+    
+    // Try to read other files
+    const file = await Deno.readTextFile("." + path);
+    const contentType = path.endsWith(".css") ? "text/css" :
+                        path.endsWith(".js") ? "application/javascript" :
+                        path.endsWith(".json") ? "application/json" :
+                        "text/plain";
+    
+    return new Response(file, {
+      status: 200,
+      headers: { "Content-Type": contentType },
+    });
+  } catch {
+    return new Response("Not found", { status: 404 });
+  }
+}
+
+// API Handlers
+async function handleUsers(req: Request): Promise<Response> {
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST",
     "Content-Type": "application/json"
   };
   
-  // Routes
-  if (path === "/api/users" && req.method === "GET") {
+  if (req.method === "GET") {
     return Response.json(store.users, { headers });
     
-  } else if (path === "/api/users" && req.method === "POST") {
+  } else if (req.method === "POST") {
     const user = await agent.create();
     store.users.push(user);
     return Response.json(user, { status: 201, headers });
     
-  } else if (path === "/api/posts" && req.method === "GET") {
+  } else {
+    return Response.json({ error: "Method not allowed" }, { 
+      status: 405, 
+      headers 
+    });
+  }
+}
+
+async function handlePosts(req: Request): Promise<Response> {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST",
+    "Content-Type": "application/json"
+  };
+  
+  if (req.method === "GET") {
     return Response.json(store.posts, { headers });
     
-  } else if (path === "/api/posts" && req.method === "POST") {
+  } else if (req.method === "POST") {
     const body = await parseBody(req);
     const useAI = body.useAI === true;
     const post = await agent.post(useAI);
     store.posts.push(post);
     return Response.json(post, { status: 201, headers });
     
-  } else if (path === "/api/comments" && req.method === "POST") {
-    const body = await parseBody(req);
-    const useAI = body.useAI === true;
-    const comment = await agent.comment(body.post || "", useAI);
+  } else {
+    return Response.json({ error: "Method not allowed" }, { 
+      status: 405, 
+      headers 
+    });
+  }
+}
+
+async function handleComments(req: Request): Promise<Response> {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST",
+    "Content-Type": "application/json"
+  };
+  
+  if (req.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { 
+      status: 405, 
+      headers 
+    });
+  }
+  
+  const body = await parseBody(req);
+  const useAI = body.useAI === true;
+  const comment = await agent.comment(body.post || "", useAI);
+  store.comments.push(comment);
+  return Response.json(comment, { status: 201, headers });
+}
+
+async function handleAgentAction(req: Request): Promise<Response> {
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST",
+    "Content-Type": "application/json"
+  };
+  
+  if (req.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { 
+      status: 405, 
+      headers 
+    });
+  }
+  
+  const body = await parseBody(req);
+  
+  if (body.action === "create") {
+    // Smart creation: use AI sparingly
+    const user = await agent.create();
+    const useAIForPost = Math.random() > 0.7; // 30% chance for AI post
+    const useAIForComment = Math.random() > 0.8; // 20% chance for AI comment
+    
+    const post = await agent.post(useAIForPost);
+    const comment = await agent.comment(post.id, useAIForComment);
+    
+    store.users.push(user);
+    store.posts.push(post);
     store.comments.push(comment);
-    return Response.json(comment, { status: 201, headers });
     
-  } else if (path === "/api/agent" && req.method === "POST") {
-    const body = await parseBody(req);
+    // Update stats
+    if (post.aiUsed) store.stats.totalAICalls++;
+    if (comment.aiUsed) store.stats.totalAICalls++;
+    store.stats.lastAICall = new Date().toISOString();
     
-    if (body.action === "create") {
-      // Smart creation: use AI sparingly
-      const user = await agent.create();
-      const useAIForPost = Math.random() > 0.7; // 30% chance for AI post
-      const useAIForComment = Math.random() > 0.8; // 20% chance for AI comment
-      
-      const post = await agent.post(useAIForPost);
-      const comment = await agent.comment(post.id, useAIForComment);
-      
-      store.users.push(user);
-      store.posts.push(post);
-      store.comments.push(comment);
-      
-      // Update stats
-      if (post.aiUsed) store.stats.totalAICalls++;
-      if (comment.aiUsed) store.stats.totalAICalls++;
-      store.stats.lastAICall = new Date().toISOString();
-      
-      return Response.json({ 
-        user, 
-        post: { ...post, aiUsed: useAIForPost },
-        comment: { ...comment, aiUsed: useAIForComment },
-        aiUsage: { post: useAIForPost, comment: useAIForComment }
-      }, { headers });
-      
-    } else if (body.action === "stats") {
-      return Response.json({
-        stats: store.stats,
-        agentStats: agent.getStats(),
-        counts: {
-          users: store.users.length,
-          posts: store.posts.length,
-          comments: store.comments.length
-        }
-      }, { headers });
-    }
+    return Response.json({ 
+      user, 
+      post: { ...post, aiUsed: useAIForPost },
+      comment: { ...comment, aiUsed: useAIForComment },
+      aiUsage: { post: useAIForPost, comment: useAIForComment }
+    }, { headers });
     
+  } else if (body.action === "stats") {
+    return Response.json({
+      stats: store.stats,
+      agentStats: agent.getStats(),
+      counts: {
+        users: store.users.length,
+        posts: store.posts.length,
+        comments: store.comments.length
+      }
+    }, { headers });
+  }
+  
+  return Response.json({ error: "Unknown action" }, { 
+    status: 400, 
+    headers 
+  });
+}
+
+// Main router
+async function router(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const path = url.pathname;
+  
+  // Route to API handlers or static files
+  if (path.startsWith("/api/users")) {
+    return handleUsers(req);
+  } else if (path.startsWith("/api/posts")) {
+    return handlePosts(req);
+  } else if (path.startsWith("/api/comments")) {
+    return handleComments(req);
+  } else if (path.startsWith("/api/agent")) {
+    return handleAgentAction(req);
   } else if (path === "/api/health") {
+    const headers = {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "application/json"
+    };
     const hasKey = !!Deno.env.get("AI_API_KEY");
     return Response.json({ 
       ok: true, 
@@ -369,29 +467,41 @@ async function router(req: Request): Promise<Response> {
     }, { headers });
     
   } else if (path === "/api/stats") {
+    const headers = {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "application/json"
+    };
     return Response.json(store.stats, { headers });
+    
+  } else if (path === "/api") {
+    const headers = {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "application/json"
+    };
+    const agentStats = agent.getStats();
+    return Response.json({
+      name: "Dead Internet Media",
+      aiConfigured: agentStats.hasApiKey,
+      model: agentStats.model,
+      rateLimited: agentStats.rateLimited,
+      maxPerDay: agentStats.maxPerDay,
+      routes: [
+        "GET  /api/users",
+        "POST /api/users",
+        "GET  /api/posts",
+        "POST /api/posts {useAI:true/false}",
+        "POST /api/comments {post:id, useAI:true/false}",
+        "POST /api/agent {action:'create'}",
+        "POST /api/agent {action:'stats'}",
+        "GET  /api/health",
+        "GET  /api/stats"
+      ]
+    }, { headers });
+    
+  } else {
+    // Serve static files (HTML frontend)
+    return await serveStatic(path);
   }
-  
-  // Default
-  const agentStats = agent.getStats();
-  return Response.json({
-    name: "Dead Internet Media",
-    aiConfigured: agentStats.hasApiKey,
-    model: agentStats.model,
-    rateLimited: agentStats.rateLimited,
-    maxPerDay: agentStats.maxPerDay,
-    routes: [
-      "GET  /api/users",
-      "POST /api/users",
-      "GET  /api/posts",
-      "POST /api/posts {useAI:true/false}",
-      "POST /api/comments {post:id, useAI:true/false}",
-      "POST /api/agent {action:'create'}",
-      "POST /api/agent {action:'stats'}",
-      "GET  /api/health",
-      "GET  /api/stats"
-    ]
-  }, { headers });
 }
 
 // Start
@@ -404,6 +514,7 @@ if (import.meta.main) {
   console.log(`📊 Rate limiting: 1 request/second, 1000/day`);
   console.log(`🌐 Base URL: https://api.airforce/v1`);
   console.log(`🧠 Model: gemma3-270m:free (KOSTENLOS!)`);
+  console.log(`🌍 Frontend: http://localhost:${port}`);
   
   serve(router, { port });
 }
