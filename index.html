@@ -407,7 +407,7 @@
 
         async function updateStats() {
             try {
-                const response = await fetch(`${API_BASE}/health`);
+                const response = await fetch(`${API_BASE}/health?t=${Date.now()}`);
                 if (response.ok) {
                     const data = await response.json();
                     
@@ -417,7 +417,7 @@
                     
                     // Kommentare: Summiere replies von allen Posts
                     // Hole Feed-Daten für Kommentarzählung
-                    const feedResponse = await fetch(`${API_BASE}/feed`);
+                    const feedResponse = await fetch(`${API_BASE}/feed?t=${Date.now()}`);
                     if (feedResponse.ok) {
                         const feedData = await feedResponse.json();
                         const commentCount = feedData.feed?.reduce((sum, post) => sum + (post.replies || 0), 0) || 0;
@@ -439,7 +439,7 @@
 
         async function updateSystemStatus() {
             try {
-                const response = await fetch(`${API_BASE}/health`);
+                const response = await fetch(`${API_BASE}/health?t=${Date.now()}`);
                 if (response.ok) {
                     const data = await response.json();
                     const statusDiv = document.getElementById('systemStatus');
@@ -489,7 +489,7 @@
 
         async function refreshFeed() {
             try {
-                const response = await fetch(`${API_BASE}/feed`);
+                const response = await fetch(`${API_BASE}/feed?t=${Date.now()}`);
                 if (response.ok) {
                     const data = await response.json();
                     renderFeed(data.feed || []);
