@@ -506,10 +506,22 @@ async function router(req: Request): Promise<Response> {
 
 // Start
 if (import.meta.main) {
-  // FORCE Port 8080 on Deno Deploy, 8000 locally
-  const isDenoDeploy = !!Deno.env.get("DENO_DEPLOYMENT_ID") || 
-                      (typeof navigator !== "undefined" && navigator.userAgent?.includes("Deno/Deploy"));
-  const port = isDenoDeploy ? 8080 : parseInt(Deno.env.get("PORT") || "8000");
+  // Bestimme Port sicher für Deno Deploy:
+  // 1. Use PORT environment variable if set (Deno Deploy might set this)
+  // 2. If DENO_DEPLOYMENT_ID exists -> default to 8080 (Deploy standard)
+  // 3. Otherwise -> 8000 for local development
+  const portEnv = Deno.env.get("PORT");
+  const isDenoDeploy = !!Deno.env.get("DENO_DEPLOYMENT_ID");
+  
+  let port: number;
+  if (portEnv && portEnv.trim() !== "") {
+    port = parseInt(portEnv);
+  } else if (isDenoDeploy) {
+    port = 8080; // Default port for Deno Deploy
+  } else {
+    port = 8000; // Local development default
+  }
+  
   const aiKey = Deno.env.get("AI_API_KEY");
   
   console.log(`🚀 Dead Internet Media on port ${port}`);
@@ -517,7 +529,13 @@ if (import.meta.main) {
   console.log(`📊 Rate limiting: 1 request/second, 1000/day`);
   console.log(`🌐 Base URL: https://api.airforce/v1`);
   console.log(`🧠 Model: gemma3-270m:free (KOSTENLOS!)`);
-  console.log(`🌍 Available at: ${isDenoDeploy ? "https://" + Deno.env.get("DENO_DEPLOYMENT_ID") + ".deno.dev" : `http://localhost:${port}`}`);
+  
+  if (isDenoDeploy) {
+    const deploymentId = Deno.env.get("DENO_DEPLOYMENT_ID");
+    console.log(`🌍 Deployed to: https://${deploymentId}.deno.dev`);
+  } else {
+    console.log(`🌍 Local: http://localhost:${port}`);
+  }
   
   serve(router, { port });
 }
